@@ -42,7 +42,7 @@ body:
       label: Environment
       description: Include your setup details
       placeholder: |
-        - CairnStack version:
+        - NoonFlow version:
         - macOS version:
         - Claude Code installed: yes / no
         - Codex installed: yes / no

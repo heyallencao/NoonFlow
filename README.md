@@ -1,16 +1,16 @@
-# CairnStack
+# NoonFlow
 
 <p align="center">
   English | <a href="./README_CN.md">简体中文</a>
 </p>
 
-CairnStack is a visual AI coding workspace for people who already spend serious time in Claude Code and Codex.
+NoonFlow is a visual AI coding workspace for people who already spend serious time in Claude Code and Codex.
 
 It is not trying to replace those CLIs. The point is a better interaction layer and a better management layer: stronger chat flow, session continuity, memory visibility, and a more usable desktop workspace for long-running AI coding work.
 
-This repository is starting as the public home for releases, docs, and feedback around CairnStack. Public source snapshots can be added in stages.
+This repository is starting as the public home for releases, docs, and feedback around NoonFlow. Public source snapshots can be added in stages.
 
-## Why CairnStack
+## Why NoonFlow
 
 Once AI coding becomes daily work, the pain is no longer whether a CLI can answer a prompt.
 
@@ -22,7 +22,7 @@ The real pain is everything around it:
 - costs that are easy to miss until they become a problem
 - repos, projects, and worktrees that lack a clear visual management layer
 
-CairnStack is built to pull those pieces back into one workspace, so AI coding feels less fragmented and much more manageable over time.
+NoonFlow is built to pull those pieces back into one workspace, so AI coding feels less fragmented and much more manageable over time.
 
 ## What You Get
 
@@ -34,7 +34,7 @@ CairnStack is built to pull those pieces back into one workspace, so AI coding f
 
 ## Who It Is For
 
-CairnStack is designed for developers who already use Claude Code or Codex regularly and want more than a terminal wrapper.
+NoonFlow is designed for developers who already use Claude Code or Codex regularly and want more than a terminal wrapper.
 
 It is especially useful if you care about session continuity, memory management, provider flexibility, and a workflow that fits real local development.
 
@@ -42,7 +42,7 @@ It is especially useful if you care about session continuity, memory management,
 
 - Platform: macOS
 - Runtime requirement: Claude Code or Codex CLI installed and authenticated
-- Download: [GitHub Releases](https://github.com/heyallencao/CairnStack/releases)
+- Download: [GitHub Releases](https://github.com/heyallencao/NoonFlow/releases)
 - Quick start: [QUICKSTART.md](./QUICKSTART.md)
 
 ## What's Next
@@ -55,8 +55,8 @@ It is especially useful if you care about session continuity, memory management,
 
 ## Feedback
 
-- Bugs and install issues: [GitHub Issues](https://github.com/heyallencao/CairnStack/issues)
-- Ideas and product discussion: [GitHub Discussions](https://github.com/heyallencao/CairnStack/discussions)
+- Bugs and install issues: [GitHub Issues](https://github.com/heyallencao/NoonFlow/issues)
+- Ideas and product discussion: [GitHub Discussions](https://github.com/heyallencao/NoonFlow/discussions)
 - Common questions: [docs/faq.md](./docs/faq.md)
 
 ## License

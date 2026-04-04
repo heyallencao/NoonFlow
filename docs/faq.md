@@ -4,13 +4,13 @@
   English | <a href="./faq_CN.md">简体中文</a>
 </p>
 
-## What is CairnStack?
+## What is NoonFlow?
 
-CairnStack is a visual AI coding workspace for people who already use Claude Code and Codex heavily.
+NoonFlow is a visual AI coding workspace for people who already use Claude Code and Codex heavily.
 
 ## Is this a replacement for Claude Code or Codex?
 
-No. CairnStack sits on top of those runtimes and gives you a stronger visual workspace around them.
+No. NoonFlow sits on top of those runtimes and gives you a stronger visual workspace around them.
 
 ## Is this just a wrapper?
 
@@ -22,7 +22,7 @@ Yes. The current product depends on the underlying runtimes being installed and 
 
 ## Can I use custom providers or relay-compatible APIs?
 
-Yes. CairnStack is designed to support flexible provider and model setup, including custom endpoints and relay-compatible APIs.
+Yes. NoonFlow is designed to support flexible provider and model setup, including custom endpoints and relay-compatible APIs.
 
 ## Is macOS the only platform right now?
 

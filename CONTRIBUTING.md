@@ -1,11 +1,11 @@
 # Contributing
 
-Thanks for your interest in contributing to CairnStack.
+Thanks for your interest in contributing to NoonFlow.
 
 ## Before You Start
 
-- For reproducible bugs, please open an [Issue](https://github.com/heyallencao/CairnStack/issues)
-- For product ideas, workflow discussion, or prioritization, please use [Discussions](https://github.com/heyallencao/CairnStack/discussions)
+- For reproducible bugs, please open an [Issue](https://github.com/heyallencao/NoonFlow/issues)
+- For product ideas, workflow discussion, or prioritization, please use [Discussions](https://github.com/heyallencao/NoonFlow/discussions)
 - For larger changes, open an issue or discussion first so the direction is clear before you spend time on implementation
 
 ## Pull Requests
@@ -18,7 +18,7 @@ Thanks for your interest in contributing to CairnStack.
 
 ## Scope
 
-CairnStack is still in an early public stage. Some product surfaces, naming, and structure may continue to evolve quickly.
+NoonFlow is still in an early public stage. Some product surfaces, naming, and structure may continue to evolve quickly.
 
 That means:
 

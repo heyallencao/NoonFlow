@@ -12,8 +12,8 @@
 
 ## Install
 
-1. Download the latest build from [GitHub Releases](https://github.com/heyallencao/CairnStack/releases)
-2. Move `CairnStack.app` into `/Applications`
+1. Download the latest build from [GitHub Releases](https://github.com/heyallencao/NoonFlow/releases)
+2. Move `NoonFlow.app` into `/Applications`
 3. Launch the app
 
 If macOS blocks the app on first launch:
@@ -23,7 +23,7 @@ If macOS blocks the app on first launch:
 3. If needed, run:
 
 ```bash
-xattr -cr /Applications/CairnStack.app
+xattr -cr /Applications/NoonFlow.app
 ```
 
 ## First Setup

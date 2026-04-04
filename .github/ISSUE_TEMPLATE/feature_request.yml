@@ -15,7 +15,7 @@ body:
     id: idea
     attributes:
       label: Proposed idea
-      description: What would you like CairnStack to do?
+      description: What would you like NoonFlow to do?
     validations:
       required: true
   - type: textarea

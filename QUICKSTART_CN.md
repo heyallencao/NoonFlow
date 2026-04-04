@@ -12,8 +12,8 @@
 
 ## 安装
 
-1. 从 [GitHub Releases](https://github.com/heyallencao/CairnStack/releases) 下载最新版本
-2. 将 `CairnStack.app` 放入 `/Applications`
+1. 从 [GitHub Releases](https://github.com/heyallencao/NoonFlow/releases) 下载最新版本
+2. 将 `NoonFlow.app` 放入 `/Applications`
 3. 启动应用
 
 如果 macOS 在首次启动时阻止应用运行：
@@ -23,7 +23,7 @@
 3. 如有需要，执行：
 
 ```bash
-xattr -cr /Applications/CairnStack.app
+xattr -cr /Applications/NoonFlow.app
 ```
 
 ## 首次配置

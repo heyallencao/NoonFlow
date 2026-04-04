@@ -4,13 +4,13 @@
   <a href="./faq.md">English</a> | 简体中文
 </p>
 
-## CairnStack 是什么？
+## NoonFlow 是什么？
 
-CairnStack 是一个面向 Claude Code 和 Codex 重度用户的可视化 AI coding 工作台。
+NoonFlow 是一个面向 Claude Code 和 Codex 重度用户的可视化 AI coding 工作台。
 
 ## 它会替代 Claude Code 或 Codex 吗？
 
-不会。CairnStack 是构建在这些运行时之上的工作台，而不是替代它们。
+不会。NoonFlow 是构建在这些运行时之上的工作台，而不是替代它们。
 
 ## 它是不是只是一个 wrapper？
 
@@ -22,7 +22,7 @@ CairnStack 是一个面向 Claude Code 和 Codex 重度用户的可视化 AI cod
 
 ## 我可以接自定义 provider 或兼容中转的 API 吗？
 
-可以。CairnStack 支持更灵活的 provider 和 model 配置，也适合接自定义 endpoint 和兼容中转的 API。
+可以。NoonFlow 支持更灵活的 provider 和 model 配置，也适合接自定义 endpoint 和兼容中转的 API。
 
 ## 现在是不是只支持 macOS？
 
