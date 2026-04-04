@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Product discussion
+    url: https://github.com/heyallencao/CairnStack/discussions
+    about: Use Discussions for product ideas, workflow suggestions, and roadmap feedback.
+  - name: Quick start
+    url: https://github.com/heyallencao/CairnStack/blob/main/QUICKSTART.md
+    about: Read the quick start before reporting installation or setup confusion.
