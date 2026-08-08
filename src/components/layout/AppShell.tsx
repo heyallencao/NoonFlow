@@ -45,39 +45,29 @@ const SPLIT_SESSIONS_KEY = "noonflow:split-sessions";
 const LEGACY_SPLIT_SESSIONS_KEYS = ["monolith:split-sessions"] as const;
 const SPLIT_ACTIVE_COLUMN_KEY = "noonflow:split-active-column";
 const LEGACY_SPLIT_ACTIVE_COLUMN_KEYS = ["monolith:split-active-column"] as const;
+let volatileSplitSessions: SplitSession[] = [];
+let volatileActiveColumnId = "";
+
+function clearPersistedSplitState() {
+  if (typeof window === "undefined") return;
+  const storage = getLocalStorageSafe();
+  removeCompatibleStorageValue(storage, SPLIT_SESSIONS_KEY, LEGACY_SPLIT_SESSIONS_KEYS);
+  removeCompatibleStorageValue(storage, SPLIT_ACTIVE_COLUMN_KEY, LEGACY_SPLIT_ACTIVE_COLUMN_KEYS);
+}
 
 function loadSplitSessions(): SplitSession[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = readCompatibleStorageValue(
-      getLocalStorageSafe(),
-      SPLIT_SESSIONS_KEY,
-      LEGACY_SPLIT_SESSIONS_KEYS,
-    );
-    if (raw) return JSON.parse(raw);
-  } catch {
-    // ignore
-  }
-  return [];
+  clearPersistedSplitState();
+  return volatileSplitSessions;
 }
 
 function saveSplitSessions(sessions: SplitSession[]) {
-  const storage = getLocalStorageSafe();
-  if (sessions.length >= 2) {
-    writeStorageValue(storage, SPLIT_SESSIONS_KEY, JSON.stringify(sessions));
-  } else {
-    removeCompatibleStorageValue(storage, SPLIT_SESSIONS_KEY, LEGACY_SPLIT_SESSIONS_KEYS);
-    removeCompatibleStorageValue(storage, SPLIT_ACTIVE_COLUMN_KEY, LEGACY_SPLIT_ACTIVE_COLUMN_KEYS);
-  }
+  volatileSplitSessions = sessions;
+  clearPersistedSplitState();
 }
 
 function loadActiveColumn(): string {
-  if (typeof window === "undefined") return "";
-  return readCompatibleStorageValue(
-    getLocalStorageSafe(),
-    SPLIT_ACTIVE_COLUMN_KEY,
-    LEGACY_SPLIT_ACTIVE_COLUMN_KEYS,
-  ) || "";
+  clearPersistedSplitState();
+  return volatileActiveColumnId;
 }
 
 const EMPTY_SET = new Set<string>();
@@ -208,7 +198,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isSplitActive = splitSessions.length >= 2;
   const isChatDetailRoute = pathname.startsWith("/chat/") || isTerminalRoute || isSplitActive;
 
-  // Persist split sessions to localStorage
+  // Keep split-session routing state in memory only.
   useEffect(() => {
     if (!layoutStateHydrated) {
       return;
@@ -216,7 +206,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
     saveSplitSessions(splitSessions);
     if (activeColumnId) {
-      writeStorageValue(getLocalStorageSafe(), SPLIT_ACTIVE_COLUMN_KEY, activeColumnId);
+      volatileActiveColumnId = activeColumnId;
     }
   }, [layoutStateHydrated, splitSessions, activeColumnId]);
 
@@ -267,7 +257,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [sessionId, sessionTitle, workingDirectory]);
 
   const pendingNavigateRef = useRef<string | null>(null);
-  const previousPreviewDiffFileRef = useRef<string | null>(null);
   const previousWorkingDirectoryRef = useRef<string | null>(null);
 
   const removeFromSplit = useCallback((removeId: string) => {
@@ -381,20 +370,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   // --- Doc Preview state ---
   const [previewFile, setPreviewFileRaw] = useState<string | null>(null);
-  const [previewDiffFile, setPreviewDiffFileRaw] = useState<string | null>(null);
   const [previewViewMode, setPreviewViewMode] = useState<PreviewViewMode>("source");
   const [docPreviewWidth, setDocPreviewWidth] = useState(480);
 
   const setPreviewFile = useCallback((path: string | null) => {
     setPreviewFileRaw(path);
-    setPreviewDiffFileRaw(null);
     if (path) {
       setPreviewViewMode(defaultViewMode());
     }
-  }, []);
-
-  const setPreviewDiffFile = useCallback((path: string | null) => {
-    setPreviewDiffFileRaw(path);
   }, []);
 
   const handleDocPreviewResize = useCallback((delta: number) => {
@@ -429,20 +412,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [clampDocPreviewWidth, clampRightPanelWidth]);
 
   useEffect(() => {
-    if (typeof window === "undefined" || !previewDiffFile) {
-      previousPreviewDiffFileRef.current = previewDiffFile;
-      return;
-    }
-    const isEnteringDiffPreview = !previousPreviewDiffFileRef.current;
-    previousPreviewDiffFileRef.current = previewDiffFile;
-    if (!isEnteringDiffPreview) {
-      return;
-    }
-    const adaptiveDiffWidth = Math.floor(window.innerWidth * 0.5);
-    setDocPreviewWidth((current) => clampDocPreviewWidth(Math.max(current, adaptiveDiffWidth)));
-  }, [clampDocPreviewWidth, previewDiffFile]);
-
-  useEffect(() => {
     const onResize = () => {
       setRightPanelWidth((width) => clampRightPanelWidth(width));
       setDocPreviewWidth((width) => clampDocPreviewWidth(width));
@@ -456,7 +425,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     setPanelOpenRaw(isChatDetailRoute);
     setPreviewFileRaw(null);
-    setPreviewDiffFileRaw(null);
   }, [isChatDetailRoute, pathname]);
 
   useEffect(() => {
@@ -469,7 +437,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
     previousWorkingDirectoryRef.current = workingDirectory;
     setPreviewFileRaw(null);
-    setPreviewDiffFileRaw(null);
   }, [workingDirectory]);
 
   const setPanelOpen = useCallback((open: boolean) => {
@@ -700,12 +667,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       pendingApprovalSessionIds,
       previewFile,
       setPreviewFile,
-      previewDiffFile,
-      setPreviewDiffFile,
       previewViewMode,
       setPreviewViewMode,
     }),
-    [panelOpen, setPanelOpen, panelContent, workingDirectory, sessionId, sessionTitle, streamingSessionId, pendingApprovalSessionId, activeStreamingSessions, pendingApprovalSessionIds, previewFile, setPreviewFile, previewDiffFile, setPreviewDiffFile, previewViewMode]
+    [panelOpen, setPanelOpen, panelContent, workingDirectory, sessionId, sessionTitle, streamingSessionId, pendingApprovalSessionId, activeStreamingSessions, pendingApprovalSessionIds, previewFile, setPreviewFile, previewViewMode]
   );
 
   const imageGenValue = useImageGenState();
@@ -816,7 +781,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <ErrorBoundary>
                   <DocPreview
                     filePath={previewFile}
-                    diffFilePath={previewDiffFile}
                     viewMode={previewViewMode}
                     onViewModeChange={setPreviewViewMode}
                     onClose={() => setPreviewFile(null)}

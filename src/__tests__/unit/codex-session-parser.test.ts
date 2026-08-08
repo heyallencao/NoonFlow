@@ -140,6 +140,17 @@ describe('codex-session-parser', () => {
     assert.equal(sessions.length, 1);
     assert.equal(sessions[0].model, 'gpt-5.2-codex');
     assert.equal(sessions[0].assistantMessageCount, 1);
+
+    const openedPage = parser.listCodexSessionPage({
+      projectPaths: ['/tmp/demo-project'],
+      limit: 1,
+    });
+    assert.equal(openedPage.total, 1);
+    assert.deepEqual(openedPage.sessions.map((session) => session.sessionId), [sessionId]);
+    assert.equal(
+      parser.listCodexSessionPage({ projectPaths: ['/tmp/not-opened'], limit: 1 }).total,
+      0,
+    );
   });
 
   it('parses custom tool call events into replay tool blocks', () => {

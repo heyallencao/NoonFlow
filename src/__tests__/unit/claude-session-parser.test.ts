@@ -210,6 +210,32 @@ describe('claude-session-parser', () => {
       assert.equal(found!.assistantMessageCount, 1);
     });
 
+    it('only indexes explicitly requested NoonFlow workspaces and honors page limits', () => {
+      createSessionFile('-home-user-opened', 'opened-session', [
+        makeUserEntry({
+          sessionId: 'opened-session',
+          content: 'Opened workspace',
+          cwd: '/home/user/opened',
+        }),
+      ]);
+      createSessionFile('-home-user-external', 'external-session', [
+        makeUserEntry({
+          sessionId: 'external-session',
+          content: 'External workspace',
+          cwd: '/home/user/external',
+        }),
+      ]);
+
+      const page = parser.listClaudeSessionPage({
+        projectPaths: ['/home/user/opened'],
+        limit: 1,
+      });
+
+      assert.equal(page.total, 1);
+      assert.deepEqual(page.sessions.map((session) => session.sessionId), ['opened-session']);
+      assert.equal(parser.listClaudeSessionPage({ projectPaths: ['/home/user/opened'], limit: 0 }).sessions.length, 0);
+    });
+
     it('should sort sessions by most recent first', () => {
       const oldSessionId = 'old-session-001';
       const newSessionId = 'new-session-001';

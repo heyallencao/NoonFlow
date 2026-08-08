@@ -44,12 +44,11 @@ import {
 } from "@/lib/session-client-cache";
 import { buildCreateSessionPreferencePayload } from '@/lib/chat-preferences';
 import { sanitizeOpenTabIds } from '@/lib/open-tabs';
-import { rememberLastChatSessionForWorktree } from "@/lib/worktree-last-session";
+import { clearTerminalPanelMemory } from '@/lib/terminal-panel-memory';
 import {
   getLocalStorageSafe,
   readCompatibleStorageValue,
   removeCompatibleStorageValue,
-  writeStorageValue,
 } from '@/lib/browser-storage';
 import { toast } from "sonner";
 import type { AssistantRuntime } from "@/types";
@@ -197,6 +196,9 @@ function legacyOpenTabsStorageKeys(workspace: string) {
   return [`monolith:open-tabs:${workspace}`];
 }
 
+const volatileOpenTabs = new Map<string, string[]>();
+const volatileTabsScroll = new Map<string, number>();
+
 const OPEN_TABS_UPDATED_EVENT = "noonflow:open-tabs-updated";
 
 function publishOpenTabsUpdated(workspace: string, tabIds: string[]) {
@@ -226,45 +228,35 @@ function legacyTerminalPanelStorageKeys(workspace: string) {
 
 function readOpenTabIds(workspace: string): string[] {
   if (typeof window === "undefined" || !workspace) return [];
-  try {
-    const raw = readCompatibleStorageValue(
-      getLocalStorageSafe(),
-      openTabsStorageKey(workspace),
-      legacyOpenTabsStorageKeys(workspace),
-    );
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed)
-      ? parsed.filter((value): value is string => typeof value === "string" && value.length > 0)
-      : [];
-  } catch {
-    return [];
-  }
+  removeCompatibleStorageValue(
+    getLocalStorageSafe(),
+    openTabsStorageKey(workspace),
+    legacyOpenTabsStorageKeys(workspace),
+  );
+  return volatileOpenTabs.get(workspace) ?? [];
 }
 
 function writeOpenTabIds(workspace: string, tabIds: string[]) {
   if (typeof window === "undefined" || !workspace) return;
   const deduped = sanitizeOpenTabIds(tabIds);
-  writeStorageValue(getLocalStorageSafe(), openTabsStorageKey(workspace), JSON.stringify(deduped));
+  volatileOpenTabs.set(workspace, deduped);
   publishOpenTabsUpdated(workspace, deduped);
 }
 
 function readTabsScrollLeft(workspace: string): number {
   if (typeof window === "undefined" || !workspace) return 0;
-  const raw = readCompatibleStorageValue(
+  removeCompatibleStorageValue(
     getLocalStorageSafe(),
     tabsScrollStorageKey(workspace),
     legacyTabsScrollStorageKeys(workspace),
   );
-  if (!raw) return 0;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  return volatileTabsScroll.get(workspace) ?? 0;
 }
 
 function writeTabsScrollLeft(workspace: string, value: number) {
   if (typeof window === "undefined" || !workspace) return;
   const normalized = Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
-  writeStorageValue(getLocalStorageSafe(), tabsScrollStorageKey(workspace), String(normalized));
+  volatileTabsScroll.set(workspace, normalized);
 }
 
 function closeWorkspaceTerminalPanel(workspace: string) {
@@ -272,7 +264,7 @@ function closeWorkspaceTerminalPanel(workspace: string) {
 
   const storage = getLocalStorageSafe();
   const storageKey = terminalPanelStorageKey(workspace);
-  let terminalSessionId = "";
+  let terminalSessionId = clearTerminalPanelMemory(workspace) || "";
   try {
     const raw = readCompatibleStorageValue(
       storage,
@@ -281,7 +273,7 @@ function closeWorkspaceTerminalPanel(workspace: string) {
     );
     if (raw) {
       const parsed = JSON.parse(raw) as { sessionId?: unknown };
-      if (typeof parsed?.sessionId === "string" && parsed.sessionId) {
+      if (!terminalSessionId && typeof parsed?.sessionId === "string" && parsed.sessionId) {
         terminalSessionId = parsed.sessionId;
       }
     }
@@ -513,46 +505,6 @@ export function SessionTabs({
     }
     writeOpenTabIds(normalizedWorkspace, openTabIds);
   }, [normalizedWorkspace, openTabIds, openTabsWorkspace]);
-
-  useEffect(() => {
-    const activeSession = workspaceSessions.find((session) => session.id === activeSessionId);
-    if (activeSession) {
-      if ((activeSession.session_type || "chat") !== "chat") return;
-      rememberLastChatSessionForWorktree({
-        sessionId: activeSession.id,
-        worktreeId: activeSession.worktree_id,
-        workingDirectory: activeSession.working_directory || effectiveWorkingDirectory,
-      });
-      return;
-    }
-
-    const activeSessionMeta = activeSessionId ? sessionMetaCache[activeSessionId] : undefined;
-    const activeSessionWorkspaceFromMeta = normalizeWorkspacePath(activeSessionMeta?.workingDirectory || "");
-    const activeSessionInNormalizedWorkspace = activeSessionWorkspaceFromMeta
-      ? activeSessionWorkspaceFromMeta === normalizedWorkspace
-      : workspaceSessions.some((session) => session.id === activeSessionId);
-
-    if (
-      !activeSessionId ||
-      effectiveActiveSessionType !== "chat" ||
-      !effectiveWorkingDirectory ||
-      !activeSessionInNormalizedWorkspace
-    ) {
-      return;
-    }
-
-    rememberLastChatSessionForWorktree({
-      sessionId: activeSessionId,
-      workingDirectory: effectiveWorkingDirectory,
-    });
-  }, [
-    activeSessionId,
-    effectiveActiveSessionType,
-    effectiveWorkingDirectory,
-    normalizedWorkspace,
-    sessionMetaCache,
-    workspaceSessions,
-  ]);
 
   const fetchWorkspaceSessions = useCallback(async () => {
     if (!normalizedWorkspace) {

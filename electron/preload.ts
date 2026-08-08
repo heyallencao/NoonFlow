@@ -42,7 +42,6 @@ const electronAPI = {
     checkPrerequisites: () => ipcRenderer.invoke("install:check-prerequisites"),
     start: (options?: {
       includeNode?: boolean;
-      installGit?: boolean;
       installClaude?: boolean;
       installCodex?: boolean;
       initializeClaude?: boolean;
@@ -51,10 +50,6 @@ const electronAPI = {
     cancel: () => ipcRenderer.invoke("install:cancel"),
     getLogs: () => ipcRenderer.invoke("install:get-logs"),
     onProgress: (cb: (data: unknown) => void) => onEvent("install:progress", cb),
-  },
-
-  bridge: {
-    isActive: () => ipcRenderer.invoke("bridge:is-active"),
   },
 
   environment: {

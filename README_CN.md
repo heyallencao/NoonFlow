@@ -5,11 +5,7 @@
 </p>
 
 <p align="center">
-  <b>Claude Code 与 Codex CLI 的原生桌面 GUI</b>
-</p>
-
-<p align="center">
-  AI 驱动编程工作流的可视化界面
+  <b>专注于 Claude Code 与 Codex 的桌面工作区</b>
 </p>
 
 <p align="center">
@@ -18,126 +14,62 @@
 
 ---
 
-## 功能特性
+NoonFlow 是一个原生 macOS 桌面界面，用来在项目工作区中使用 Claude Code 和 Codex。当前版本主动聚焦于对话、原生会话延续、终端和运行时配置。
 
-- **AI 支持** — 当前支持：Claude (Anthropic)、Codex (OpenAI)。架构已预留多供应商扩展
-- **原生桌面体验** — 基于 Electron 构建，支持 macOS（即将支持 Windows/Linux）
-- **集成终端** — 内置终端，基于 node-pty 和 xterm.js
-- **MCP 插件系统** — 管理 Model Context Protocol 服务器和插件
-- **会话管理** — 基于 SQLite 的持久化聊天记录
-- **成本追踪** — 监控 API 使用量和消费情况
-- **Worktree 支持** — Git worktree 集成，支持基于分支的工作流
-- **技能市场** — 浏览和安装社区技能
+## 当前能力
+
+- **Claude Code 与 Codex** — 在同一个工作区中切换两种本地编码运行时
+- **工作区优先** — 只展示你在 NoonFlow 中主动打开过的项目，并回到项目最近的原生会话
+- **原生会话延续** — 直接读取和恢复 Claude Code、Codex 会话，不导入、不复制到 NoonFlow 自己的对话数据库
+- **记忆浏览** — 分页查看 NoonFlow 已打开工作区所关联的原生会话历史
+- **终端与文件** — 在应用内浏览项目、编辑文件并使用集成终端
+- **运行时配置** — 管理所支持编码运行时的 Skills、Hooks、Agents 和 MCP 配置
+- **权限确认** — 在桌面界面中处理运行时发起的工具权限请求
+
+## 当前边界
+
+这个版本删除了 Monitor/分析页面、Git 仪表盘与 worktree 管理、bot 集成以及 bridge 子系统。NoonFlow 不再持久化自己的聊天副本；Claude Code 和 Codex 是各自会话的唯一事实来源。NoonFlow 只保留应用偏好，例如你主动打开过的工作区。
 
 ## 技术栈
 
-- **前端**: Next.js 16 + React 19 + TypeScript
-- **桌面端**: Electron 33
-- **样式**: Tailwind CSS 4 + Radix UI
-- **终端**: node-pty + xterm.js
-- **数据库**: better-sqlite3
-- **AI SDK**: @anthropic-ai/claude-agent-sdk, @openai/codex-sdk
+- Next.js 16、React 19、TypeScript
+- Electron 40
+- Tailwind CSS 4、Radix UI
+- node-pty、xterm.js
+- Anthropic Claude Agent SDK、OpenAI Codex SDK
+- better-sqlite3 只用于本地配置和进程内运行时表，不保存重复的对话历史
 
-## 安装
+## 安装与运行
 
-### 下载预构建版本（推荐）
-
-从 [Releases](https://github.com/heyallencao/NoonFlow/releases) 页面下载最新版本。
-
-### 从源码构建
+当前仓库支持从源码运行和构建，暂未发布经过 Apple 公证的 macOS 安装包。
 
 **环境要求：**
-- Node.js 20+
-- npm 10+
-- macOS（用于构建 macOS 版本）
+
+- macOS 13 或更高版本
+- Node.js 24（以 `.nvmrc` 为准）
+- npm 11+
+- 已安装并初始化 Claude Code 和/或 Codex
 
 ```bash
-# 克隆仓库
 git clone https://github.com/heyallencao/NoonFlow.git
 cd NoonFlow
-
-# 安装依赖
-npm install
-
-# 构建原生模块
-npm run native:ensure
-
-# 启动开发模式
+nvm use
+npm ci
 npm run electron:dev
 ```
 
+NoonFlow 可以沿用 Claude Code 和 Codex 现有的登录与配置；需要 API Key 模式时，也可以在设置中配置可选的供应商凭据。
+
 ## 开发
 
-### 可用脚本
-
 ```bash
-# 开发
-npm run dev              # 启动 Next.js 开发服务器
-npm run electron:dev     # 以开发模式启动 Electron
-
-# 构建
-npm run build            # 构建 Next.js 生产包
-npm run electron:build   # 为当前平台构建 Electron 应用
-
-# macOS 专用构建
-npm run electron:build:mac:arm64           # 为 Apple Silicon 构建已签名应用
-npm run electron:build:mac:x64             # 为 Intel Mac 构建已签名应用
-npm run electron:build:mac                 # 为当前架构构建已签名应用
-npm run electron:build:mac:release         # 为当前架构构建已公证发布包
-
-# 测试
-npm run lint             # 运行 ESLint
-npm run electron:smoke   # 运行冒烟测试
+npm run lint       # ESLint
+npm test           # 单元测试与 TypeScript 检查
+npm run build      # Next.js 生产构建
+npm run electron:smoke
 ```
 
-### 开发环境建议
-
-NoonFlow 当前推荐采用“主仓库基线 + worktree 本地复用依赖”的方式开发，而不是每个 worktree 都重新 `npm install`。
-
-为了保证构建可复现，建议从仓库根目录安装依赖，并在依赖或 Electron 版本变化后重新构建 Electron 原生模块。
-
-### 项目结构
-
-```
-NoonFlow/
-├── electron/           # Electron 主进程
-│   ├── main.ts        # 主入口
-│   ├── handlers/      # IPC 处理程序
-│   ├── server.ts      # 静态文件服务器
-│   └── icons/         # 应用图标
-├── src/               # Next.js 前端
-│   ├── app/           # App Router 页面
-│   ├── components/    # React 组件
-│   ├── hooks/         # 自定义 Hooks
-│   └── lib/           # 工具函数
-├── scripts/           # 构建脚本
-├── docs/              # 文档
-└── build/             # 构建输出
-```
-
-## 配置
-
-### API 密钥
-
-NoonFlow 需要 AI 供应商的 API 密钥。在设置页面配置：
-
-- **Anthropic** — 从 [console.anthropic.com](https://console.anthropic.com) 获取密钥
-- **OpenAI** — 从 [platform.openai.com](https://platform.openai.com) 获取密钥
-- **Google** — 从 [aistudio.google.com](https://aistudio.google.com) 获取密钥
-
-### MCP 服务器
-
-在设置 > 插件中配置 MCP（Model Context Protocol）服务器。NoonFlow 支持：
-- 自定义 MCP 服务器
-- 内置工具（文件系统、终端等）
-
-## 参与贡献
-
-1. Fork 本仓库
-2. 创建功能分支 (`git checkout -b feature/amazing-feature`)
-3. 提交更改 (`git commit -m 'Add some amazing feature'`)
-4. 推送到分支 (`git push origin feature/amazing-feature`)
-5. 创建 Pull Request
+本地 macOS 打包需要 Developer ID Application 证书；正式公开二进制发行还需要 Apple 公证配置。
 
 ## 开源协议
 
@@ -145,12 +77,6 @@ NoonFlow 需要 AI 供应商的 API 密钥。在设置页面配置：
 
 ## 致谢
 
-- 基于 [Electron](https://www.electronjs.org/) 构建
-- UI 使用 [shadcn/ui](https://ui.shadcn.com/) 和 [Radix UI](https://www.radix-ui.com/)
-- 图标来自 [HugeIcons](https://hugeicons.com/)
-
----
-
-<p align="center">
-  为 Claude Code 社区精心打造 ❤️
-</p>
+- [Electron](https://www.electronjs.org/)
+- [shadcn/ui](https://ui.shadcn.com/) 与 [Radix UI](https://www.radix-ui.com/)
+- [HugeIcons](https://hugeicons.com/)

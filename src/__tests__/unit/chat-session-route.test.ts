@@ -34,7 +34,6 @@ describe('/api/chat/sessions/[id] PATCH', () => {
       'code',
       '',
       'chat',
-      undefined,
       'codex',
     );
     updateSdkSessionId(session.id, 'codex-thread-1');
@@ -61,7 +60,6 @@ describe('/api/chat/sessions/[id] PATCH', () => {
       'code',
       '',
       'chat',
-      undefined,
       'codex',
     );
     updateSdkSessionId(session.id, 'codex-thread-2');
@@ -88,7 +86,6 @@ describe('/api/chat/sessions/[id] PATCH', () => {
       'code',
       'provider-a',
       'chat',
-      undefined,
       'codex',
     );
     updateSdkSessionId(session.id, 'codex-thread-3');
@@ -115,7 +112,6 @@ describe('/api/chat/sessions/[id] PATCH', () => {
       'code',
       '',
       'chat',
-      undefined,
       'claude_code',
     );
     updateSdkSessionId(session.id, 'claude-thread-1');
@@ -142,7 +138,6 @@ describe('/api/chat/sessions/[id] PATCH', () => {
       'code',
       '',
       'chat',
-      undefined,
       'codex',
     );
     updateSdkSessionId(session.id, 'codex-thread-clear-workdir');
@@ -170,7 +165,6 @@ describe('/api/chat/sessions/[id] PATCH', () => {
       'code',
       '',
       'chat',
-      undefined,
       'codex',
     );
     updateSdkSessionId(session.id, 'codex-thread-invalid-patch');

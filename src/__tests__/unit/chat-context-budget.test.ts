@@ -127,7 +127,6 @@ describe('/api/chat context budget guard', () => {
       'code',
       '',
       'chat',
-      undefined,
       'codex',
     );
 

@@ -24,6 +24,8 @@ import { useTranslation } from "@/hooks/useTranslation";
 import { getRuntimeLabel } from "@/lib/runtime-display";
 import { cn } from "@/lib/utils";
 import type { SessionPreviewTag } from "@/lib/session-preview";
+import { getWorkspaceName, getWorkspacePathHint, normalizeWorkspacePath } from "@/lib/workspace-utils";
+import { useWorkspaceStore } from "@/stores/workspace-store";
 
 interface ReplaySessionInfo {
   runtime: "claude_code" | "codex";
@@ -44,6 +46,15 @@ interface ReplaySessionInfo {
 
 interface ReplaySessionsResponse {
   sessions: ReplaySessionInfo[];
+  total: number;
+  workspaceTotal: number;
+  nextCursor: number | null;
+}
+
+interface WorkspaceOption {
+  path: string;
+  name: string;
+  hint: string;
 }
 
 type TranslateFn = ReturnType<typeof useTranslation>["t"];
@@ -53,8 +64,6 @@ const RUNTIME_FILTER_ALL = "__all__";
 const PAGE_SIZE_DEFAULT = 8;
 const PAGE_SIZE_LG = 10;
 const PAGE_SIZE_2XL = 12;
-const getReplayReturnToStorageKey = (sessionId: string) => `noonflow:replay-return-to:${sessionId}`;
-
 function useResponsivePageSize(): number {
   const [pageSize, setPageSize] = useState(PAGE_SIZE_DEFAULT);
   useEffect(() => {
@@ -70,8 +79,24 @@ function useResponsivePageSize(): number {
   return pageSize;
 }
 
-async function fetchSessionReplays(): Promise<ReplaySessionsResponse> {
-  const res = await fetch("/api/session-replays");
+async function fetchSessionReplays({
+  workspaces,
+  cursor,
+  limit,
+  runtime,
+  query,
+}: {
+  workspaces: string[];
+  cursor: number;
+  limit: number;
+  runtime: string;
+  query: string;
+}): Promise<ReplaySessionsResponse> {
+  const params = new URLSearchParams({ cursor: String(cursor), limit: String(limit) });
+  for (const workspace of workspaces) params.append("workspace", workspace);
+  if (runtime === "claude_code" || runtime === "codex") params.set("runtime", runtime);
+  if (query) params.set("query", query);
+  const res = await fetch(`/api/session-replays?${params.toString()}`);
   if (!res.ok) throw new Error("Failed to fetch sessions");
   return res.json();
 }
@@ -128,7 +153,11 @@ function getPreviewTagLabel(tag: SessionPreviewTag, t: TranslateFn): string {
 export function MemoryRecentSessionsCard() {
   const router = useRouter();
   const { t } = useTranslation();
+  const workspacePaths = useWorkspaceStore((state) => state.workspacePaths);
+  const hiddenWorkspaces = useWorkspaceStore((state) => state.hiddenWorkspaces);
+  const hydrateWorkspaces = useWorkspaceStore((state) => state.hydrate);
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [projectFilter, setProjectFilter] = useState(PROJECT_FILTER_ALL);
   const [runtimeFilter, setRuntimeFilter] = useState<string>(RUNTIME_FILTER_ALL);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
@@ -137,75 +166,66 @@ export function MemoryRecentSessionsCard() {
   const buildReplayHref = (session: ReplaySessionInfo) =>
     `/sessions/${session.sessionId}?runtime=${session.runtime}&returnTo=${encodeURIComponent("/memory")}`;
   const openReplay = (session: ReplaySessionInfo) => {
-    if (typeof window !== "undefined") {
-      window.sessionStorage.setItem(getReplayReturnToStorageKey(session.sessionId), "/memory");
-    }
     router.push(buildReplayHref(session));
   };
 
+  useEffect(() => {
+    hydrateWorkspaces();
+  }, [hydrateWorkspaces]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  const projectOptions = useMemo<WorkspaceOption[]>(() => {
+    const hidden = new Set(hiddenWorkspaces.map(normalizeWorkspacePath));
+    return workspacePaths
+      .map(normalizeWorkspacePath)
+      .filter((workspace, index, all) => workspace && !hidden.has(workspace) && all.indexOf(workspace) === index)
+      .map((workspace) => ({
+        path: workspace,
+        name: getWorkspaceName(workspace),
+        hint: getWorkspacePathHint(workspace),
+      }));
+  }, [hiddenWorkspaces, workspacePaths]);
+
+  const effectiveProjectFilter = projectFilter === PROJECT_FILTER_ALL
+    || projectOptions.some((option) => option.path === projectFilter)
+    ? projectFilter
+    : PROJECT_FILTER_ALL;
+
+  const requestedWorkspaces = useMemo(
+    () => effectiveProjectFilter === PROJECT_FILTER_ALL
+      ? projectOptions.map((option) => option.path)
+      : [effectiveProjectFilter],
+    [effectiveProjectFilter, projectOptions],
+  );
+  const cursor = (page - 1) * pageSize;
   const { data, isLoading, error } = useQuery({
-    queryKey: ["memory-recent-sessions"],
-    queryFn: fetchSessionReplays,
+    queryKey: ["memory-recent-sessions", requestedWorkspaces, cursor, pageSize, runtimeFilter, debouncedQuery],
+    queryFn: () => fetchSessionReplays({
+      workspaces: requestedWorkspaces,
+      cursor,
+      limit: pageSize,
+      runtime: runtimeFilter,
+      query: debouncedQuery,
+    }),
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
 
   const sessions = useMemo(() => data?.sessions ?? [], [data?.sessions]);
-
-  const projectOptions = useMemo(() => {
-    const set = new Set<string>();
-    for (const session of sessions) {
-      if (!session.projectName) continue;
-      set.add(session.projectName);
-    }
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [sessions]);
-
-  const filteredSessions = useMemo(() => {
-    const keyword = query.trim().toLowerCase();
-    return sessions.filter((session) => {
-      if (projectFilter !== PROJECT_FILTER_ALL && session.projectName !== projectFilter) {
-        return false;
-      }
-
-      if (runtimeFilter !== RUNTIME_FILTER_ALL && session.runtime !== runtimeFilter) {
-        return false;
-      }
-
-      if (!keyword) return true;
-
-      const fields = [
-        session.runtime,
-        session.sessionId,
-        session.projectName,
-        session.projectPath,
-        session.cwd,
-        session.gitBranch,
-        session.model,
-        session.preview,
-      ];
-      return fields.some((field) => field && field.toLowerCase().includes(keyword));
-    });
-  }, [sessions, query, projectFilter, runtimeFilter]);
-
-  const totalPages = Math.max(1, Math.ceil(filteredSessions.length / pageSize));
+  const totalPages = Math.max(1, Math.ceil((data?.total ?? 0) / pageSize));
   const currentPage = Math.min(page, totalPages);
-
-  const pagedSessions = useMemo(() => {
-    const start = (currentPage - 1) * pageSize;
-    return filteredSessions.slice(start, start + pageSize);
-  }, [currentPage, filteredSessions, pageSize]);
-
-  const totalMessages = useMemo(
-    () => sessions.reduce((sum, item) => sum + item.userMessageCount + item.assistantMessageCount, 0),
-    [sessions]
-  );
 
   return (
     <div>
-      <div className="mb-4 grid grid-cols-1 gap-2.5 sm:mb-5 sm:grid-cols-2 sm:gap-3 lg:mb-6 xl:grid-cols-4 lg:gap-3.5">
+      <div className="mb-4 grid grid-cols-1 gap-2.5 sm:mb-5 sm:grid-cols-3 sm:gap-3 lg:mb-6 lg:gap-3.5">
         <MetricCard
           variant="compact"
           label={t("memory.totalSessions") || "Total Sessions"}
-          value={sessions.length}
+          value={data?.workspaceTotal ?? 0}
           indicatorClassName="bg-blue-400"
           loading={isLoading}
         />
@@ -218,15 +238,8 @@ export function MemoryRecentSessionsCard() {
         />
         <MetricCard
           variant="compact"
-          label={t("memory.totalMessages") || "Total Messages"}
-          value={totalMessages}
-          indicatorClassName="bg-amber-400"
-          loading={isLoading}
-        />
-        <MetricCard
-          variant="compact"
           label={t("memory.filteredSessions") || "Filtered Sessions"}
-          value={filteredSessions.length}
+          value={data?.total ?? 0}
           indicatorClassName="bg-cyan-400"
           loading={isLoading}
         />
@@ -269,9 +282,9 @@ export function MemoryRecentSessionsCard() {
                   <span className="flex items-center gap-2 truncate">
                     <HugeiconsIcon icon={Folder01Icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                     <span className="truncate">
-                      {projectFilter === PROJECT_FILTER_ALL
+                      {effectiveProjectFilter === PROJECT_FILTER_ALL
                         ? (t("memory.filterAllProjects") || "All projects")
-                        : projectFilter}
+                        : (projectOptions.find((option) => option.path === effectiveProjectFilter)?.name || getWorkspaceName(effectiveProjectFilter))}
                     </span>
                   </span>
                   <HugeiconsIcon icon={ArrowDown01Icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -293,25 +306,28 @@ export function MemoryRecentSessionsCard() {
                       >
                         <HugeiconsIcon
                           icon={CheckmarkCircle02Icon}
-                          className={`h-3.5 w-3.5 shrink-0 ${projectFilter === PROJECT_FILTER_ALL ? "opacity-100" : "opacity-0"}`}
+                          className={`h-3.5 w-3.5 shrink-0 ${effectiveProjectFilter === PROJECT_FILTER_ALL ? "opacity-100" : "opacity-0"}`}
                         />
                         {t("memory.filterAllProjects") || "All projects"}
                       </CommandItem>
-                      {projectOptions.map((name) => (
+                      {projectOptions.map((option) => (
                         <CommandItem
-                          key={name}
-                          value={name}
+                          key={option.path}
+                          value={`${option.name} ${option.hint}`}
                           onSelect={() => {
-                            setProjectFilter(name);
+                            setProjectFilter(option.path);
                             setPage(1);
                             setProjectPickerOpen(false);
                           }}
                         >
                           <HugeiconsIcon
                             icon={CheckmarkCircle02Icon}
-                            className={`h-3.5 w-3.5 shrink-0 ${projectFilter === name ? "opacity-100" : "opacity-0"}`}
+                            className={`h-3.5 w-3.5 shrink-0 ${effectiveProjectFilter === option.path ? "opacity-100" : "opacity-0"}`}
                           />
-                          {name}
+                          <span className="min-w-0">
+                            <span className="block truncate">{option.name}</span>
+                            <span className="block truncate text-[10px] text-muted-foreground">{option.hint}</span>
+                          </span>
                         </CommandItem>
                       ))}
                     </CommandGroup>
@@ -349,19 +365,21 @@ export function MemoryRecentSessionsCard() {
                 <Skeleton key={index} className="h-20 w-full" />
               ))}
             </div>
-          ) : filteredSessions.length === 0 ? (
+          ) : sessions.length === 0 ? (
             <div className="flex min-h-52 flex-col items-center justify-center gap-2 py-3 text-center text-muted-foreground">
               <HugeiconsIcon icon={DatabaseIcon} className="h-8 w-8 opacity-30" />
               <p className="text-sm">
-                {sessions.length === 0
-                  ? t("memory.noRecentSessions") || "No recent sessions."
-                  : t("memory.filteredEmpty") || "No sessions matched the current filters."}
+                {projectOptions.length === 0
+                  ? t("memory.noOpenedWorkspaces") || "Open a workspace in NoonFlow to see its native sessions here."
+                  : (data?.total ?? 0) === 0
+                    ? t("memory.noRecentSessions") || "No recent sessions."
+                    : t("memory.filteredEmpty") || "No sessions matched the current filters."}
               </p>
             </div>
           ) : (
             <div>
               <div className="space-y-2">
-                {pagedSessions.map((session) => {
+                {sessions.map((session) => {
                   const totalMessageCount = session.userMessageCount + session.assistantMessageCount;
                   const previewTags = session.previewTags ?? [];
                   const previewText = session.preview || getPreviewFallback(previewTags, t);
@@ -464,7 +482,7 @@ export function MemoryRecentSessionsCard() {
                     size="sm"
                     className="h-7 px-2.5 text-xs"
                     onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
-                    disabled={currentPage >= totalPages}
+                    disabled={data?.nextCursor === null || currentPage >= totalPages}
                   >
                     {t("memory.nextPage") || "Next"}
                   </Button>

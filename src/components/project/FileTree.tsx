@@ -8,7 +8,7 @@ import {
   RefreshIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
-import { FilePlus, FolderPlus, GitCompareArrows, Loader2 } from "lucide-react";
+import { FilePlus, FolderPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -49,8 +49,6 @@ type NameDialogMode = "create-file" | "create-folder" | "rename";
 interface FileTreeProps {
   workingDirectory: string;
   onFileSelect: (path: string) => void;
-  onDiffFileSelect?: (path: string) => void;
-  selectedDiffFilePath?: string | null;
   onFileAdd?: (path: string) => void;
 }
 
@@ -66,33 +64,10 @@ interface NameDialogState {
   node?: FileTreeNode;
 }
 
-interface GitDiffFileEntry {
-  path: string;
-  staged: boolean;
-  unstaged: boolean;
-  insertions: number;
-  deletions: number;
-  statusCode: string;
-  kind: "added" | "modified" | "deleted" | "renamed" | "copied" | "unknown";
-  untracked: boolean;
-}
-
-interface GitDiffSummaryResponse {
-  repoRoot: string;
-  branch: string;
-  totals: {
-    files: number;
-    insertions: number;
-    deletions: number;
-  };
-  files: GitDiffFileEntry[];
-}
 
 export function FileTree({
   workingDirectory,
   onFileSelect,
-  onDiffFileSelect,
-  selectedDiffFilePath,
   onFileAdd,
 }: FileTreeProps) {
   const [tree, setTree] = useState<FileTreeNode[]>([]);
@@ -107,10 +82,6 @@ export function FileTree({
   const [nameValue, setNameValue] = useState("");
   const [nameError, setNameError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<FileTreeNode | null>(null);
-  const [diffPanelOpen, setDiffPanelOpen] = useState(false);
-  const [gitDiffLoading, setGitDiffLoading] = useState(false);
-  const [gitDiffError, setGitDiffError] = useState<string | null>(null);
-  const [gitDiffSummary, setGitDiffSummary] = useState<GitDiffSummaryResponse | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const treeRef = useRef<FileTreeNode[]>([]);
   const expandedPathsRef = useRef<Set<string>>(new Set());
@@ -232,31 +203,6 @@ export function FileTree({
     [fetchTree]
   );
 
-  const fetchGitDiffSummary = useCallback(async () => {
-    if (!workingDirectory) {
-      setGitDiffSummary(null);
-      setGitDiffError(null);
-      return;
-    }
-
-    setGitDiffLoading(true);
-    try {
-      const res = await fetch(`/api/git/diff?cwd=${encodeURIComponent(workingDirectory)}`, {
-        cache: "no-store",
-      });
-      const data = (await res.json().catch(() => null)) as (GitDiffSummaryResponse & { error?: string }) | null;
-      if (!res.ok) {
-        throw new Error(data?.error || t("fileTree.diffLoadFailed"));
-      }
-      setGitDiffSummary(data);
-      setGitDiffError(null);
-    } catch (error) {
-      setGitDiffSummary(null);
-      setGitDiffError(error instanceof Error ? error.message : t("fileTree.diffLoadFailed"));
-    } finally {
-      setGitDiffLoading(false);
-    }
-  }, [t, workingDirectory]);
 
   useEffect(() => {
     void fetchTree();
@@ -276,17 +222,10 @@ export function FileTree({
     setContextMenu(null);
     setNameDialog(null);
     setDeleteTarget(null);
-    setDiffPanelOpen(false);
-    setGitDiffSummary(null);
-    setGitDiffError(null);
     loadedDirectoryPathsRef.current.clear();
     directoryFetchInFlightRef.current.clear();
   }, [workingDirectory]);
 
-  useEffect(() => {
-    if (!diffPanelOpen) return;
-    void fetchGitDiffSummary();
-  }, [diffPanelOpen, fetchGitDiffSummary]);
 
   useEffect(() => {
     const handler = () => scheduleTreeRefresh();
@@ -604,21 +543,8 @@ export function FileTree({
   const actionDisabled = loading || pendingPath !== null || !workingDirectory;
   const handleRefreshAll = useCallback(() => {
     void fetchTree();
-    if (diffPanelOpen) {
-      void fetchGitDiffSummary();
-    }
-  }, [diffPanelOpen, fetchGitDiffSummary, fetchTree]);
+  }, [fetchTree]);
 
-  const filteredDiffFiles = useMemo(() => {
-    if (!gitDiffSummary) {
-      return [];
-    }
-    const keyword = searchQuery.trim().toLowerCase();
-    if (!keyword) {
-      return gitDiffSummary.files;
-    }
-    return gitDiffSummary.files.filter((file) => file.path.toLowerCase().includes(keyword));
-  }, [gitDiffSummary, searchQuery]);
 
   return (
     <>
@@ -648,24 +574,6 @@ export function FileTree({
             <span className="sr-only">{t("fileTree.refresh")}</span>
           </Button>
           <Button
-            variant={diffPanelOpen ? "secondary" : "ghost"}
-            size="icon-sm"
-            className={cn(
-              "h-8 w-8 shrink-0",
-              diffPanelOpen
-                ? "bg-foreground/10 text-sidebar-foreground"
-                : "text-sidebar-foreground/70 hover:bg-foreground/5 hover:text-sidebar-foreground"
-            )}
-            onClick={() => setDiffPanelOpen((current) => !current)}
-            disabled={!workingDirectory}
-            title={diffPanelOpen ? t("fileTree.hideDiff") : t("fileTree.viewDiff")}
-          >
-            <GitCompareArrows className="h-4 w-4" />
-            <span className="sr-only">{diffPanelOpen ? t("fileTree.hideDiff") : t("fileTree.viewDiff")}</span>
-          </Button>
-          {!diffPanelOpen && (
-            <>
-              <Button
                 variant="ghost"
                 size="icon-sm"
                 className="h-8 w-8 shrink-0 text-sidebar-foreground/70 hover:bg-foreground/5 hover:text-sidebar-foreground"
@@ -687,108 +595,10 @@ export function FileTree({
                 <FolderPlus className="h-4 w-4" />
                 <span className="sr-only">{t("fileTree.newFolder")}</span>
               </Button>
-            </>
-          )}
         </div>
 
         {errorMessage && <p className="px-4 pb-2 text-xs text-destructive">{errorMessage}</p>}
 
-        {diffPanelOpen ? (
-          <div className="min-h-0 flex-1 px-2 pb-2">
-            <div className="flex h-full min-h-0 flex-col">
-            <div className="flex items-center justify-between gap-2 border-b border-border-subtle px-2 py-2">
-              <div className="min-w-0">
-                <p className="truncate text-xs font-semibold text-sidebar-foreground">
-                  {t("fileTree.diffTitle")}
-                </p>
-                <p className="truncate text-[11px] text-sidebar-foreground/60">
-                  {gitDiffSummary ? t("fileTree.diffBranch", { branch: gitDiffSummary.branch }) : "-"}
-                </p>
-              </div>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="h-7 w-7 shrink-0 text-sidebar-foreground/70 hover:bg-foreground/5 hover:text-sidebar-foreground"
-                onClick={() => void fetchGitDiffSummary()}
-                disabled={gitDiffLoading}
-                title={t("fileTree.refresh")}
-              >
-                <HugeiconsIcon icon={RefreshIcon} className={cn("h-3.5 w-3.5", gitDiffLoading && "animate-spin")} />
-              </Button>
-            </div>
-
-            <div className="min-h-0 flex-1 px-2 py-2">
-              {gitDiffLoading && !gitDiffSummary && (
-                <div className="flex items-center gap-2 text-xs text-sidebar-foreground/70">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  <span>{t("fileTree.diffLoading")}</span>
-                </div>
-              )}
-
-              {gitDiffError && (
-                <p className="text-xs text-destructive">{gitDiffError}</p>
-              )}
-
-              {!gitDiffLoading && !gitDiffError && gitDiffSummary && (
-                <>
-                  <div className="mb-2 flex items-center justify-between text-[11px] text-sidebar-foreground/70">
-                    <span>{t("fileTree.diffFiles", { count: gitDiffSummary.totals.files })}</span>
-                    <span>
-                      <span className="text-emerald-300">+{gitDiffSummary.totals.insertions}</span>
-                      <span className="mx-1 text-sidebar-foreground/40">/</span>
-                      <span className="text-red-300">-{gitDiffSummary.totals.deletions}</span>
-                    </span>
-                  </div>
-
-                  {filteredDiffFiles.length === 0 ? (
-                    <p className="text-xs text-sidebar-foreground/60">{t("fileTree.diffNoChanges")}</p>
-                  ) : (
-                    <div className="h-full min-h-0 overflow-auto pr-1">
-                      <div className="space-y-1">
-                        {filteredDiffFiles.map((file) => {
-                          const isSelected = selectedDiffFilePath === file.path;
-                          return (
-                            <button
-                              key={file.path}
-                              type="button"
-                              className={cn(
-                                "flex w-full items-center justify-between gap-2 rounded-md border px-2 py-2 text-left transition-colors",
-                                isSelected
-                                  ? "border-blue-400/35 bg-blue-500/8"
-                                  : "border-transparent bg-transparent hover:border-border-subtle hover:bg-foreground/[0.03]"
-                              )}
-                              onClick={() => onDiffFileSelect?.(file.path)}
-                            >
-                              <div className="min-w-0 flex-1">
-                                <p className="truncate text-[11px] font-medium text-sidebar-foreground">{file.path}</p>
-                                <p className="text-[10px] text-sidebar-foreground/55">
-                                  {file.untracked ? t("fileTree.diffUntracked") : file.statusCode || t("fileTree.diffModified")}
-                                </p>
-                              </div>
-                              <div className="shrink-0 text-[10px]">
-                                <span className="text-emerald-300">+{file.insertions}</span>
-                                <span className="mx-1 text-sidebar-foreground/35">/</span>
-                                <span className="text-red-300">-{file.deletions}</span>
-                              </div>
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <div className="mt-2 rounded-md border border-border-subtle bg-foreground/[0.03] px-2 py-1.5 text-[10px] text-sidebar-foreground/70">
-                        {t("fileTree.diffFiles", { count: gitDiffSummary.totals.files })}
-                        <span className="mx-1 text-sidebar-foreground/35">|</span>
-                        <span className="text-emerald-300">+{gitDiffSummary.totals.insertions}</span>
-                        <span className="mx-1 text-sidebar-foreground/35">/</span>
-                        <span className="text-red-300">-{gitDiffSummary.totals.deletions}</span>
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-            </div>
-          </div>
-        ) : (
           <div
             className="min-h-0 flex-1 overflow-auto overscroll-contain"
             onContextMenu={(event) => {
@@ -820,7 +630,6 @@ export function FileTree({
               </AIFileTree>
             )}
           </div>
-        )}
 
         {contextMenu && typeof document !== "undefined" &&
           createPortal(

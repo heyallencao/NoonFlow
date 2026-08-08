@@ -6,7 +6,6 @@ import {
   ArrowRight01Icon,
   Cancel01Icon,
   Folder01Icon,
-  FolderOpenIcon,
   PlusSignIcon,
   Settings02Icon,
   Sun01Icon,
@@ -14,8 +13,6 @@ import {
 } from '@hugeicons/core-free-icons';
 import { useTheme } from 'next-themes';
 import type { TranslationKey } from '@/i18n';
-import { WorktreeItem } from '@/components/worktree/WorktreeItem';
-import type { Worktree } from '@/types';
 import { cn } from '@/lib/utils';
 
 const DEFAULT_THEME_TOGGLE_ICON = Moon01Icon;
@@ -141,22 +138,8 @@ interface SidebarNavigationProps {
   t: TranslateFn;
 }
 
-const SESSIONS_MATCHED_SHADOW =
-  'shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_12px_28px_-18px_rgba(96,165,250,0.42)]';
-
 function getActiveNavClass(href: string) {
-  const sessionsMatchedRoutes = new Set([
-    '/sessions',
-    '/repos',
-    '/timeline',
-    '/work-graph',
-    '/hygiene',
-  ]);
-
-  if (sessionsMatchedRoutes.has(href)) {
-    return `bg-bg-hover text-sidebar-foreground ${SESSIONS_MATCHED_SHADOW}`;
-  }
-
+  void href;
   return 'bg-bg-hover text-sidebar-foreground';
 }
 
@@ -215,17 +198,9 @@ interface WorkspaceSectionProps {
   activeWorkspace: string;
   openingWorkspace: string | null;
   deletingWorkspacePath: string | null;
-  expandedWorkspaces: Set<string>;
-  worktreesByWorkspace: Record<string, Worktree[]>;
-  worktreeSessionCounts: Record<string, number>;
-  activeWorktreeId: string | null;
   onOpenFolderPicker: () => void;
   onOpenWorkspace: (path: string) => void;
-  onToggleWorkspaceExpand: (path: string) => void;
-  onSetWorktreeCreateTarget: (path: string) => void;
   onWorkspaceContextMenu: (e: ReactMouseEvent, workspace: WorkspaceItem) => void;
-  onWorktreeSelect: (worktree: Worktree) => void;
-  onWorktreeDelete: (worktree: Worktree) => void;
   t: TranslateFn;
 }
 
@@ -235,17 +210,9 @@ export function WorkspaceSection({
   activeWorkspace,
   openingWorkspace,
   deletingWorkspacePath,
-  expandedWorkspaces,
-  worktreesByWorkspace,
-  worktreeSessionCounts,
-  activeWorktreeId,
   onOpenFolderPicker,
   onOpenWorkspace,
-  onToggleWorkspaceExpand,
-  onSetWorktreeCreateTarget,
   onWorkspaceContextMenu,
-  onWorktreeSelect,
-  onWorktreeDelete,
   t,
 }: WorkspaceSectionProps) {
   return (
@@ -285,21 +252,8 @@ export function WorkspaceSection({
             const isActive = workspace.path === activeWorkspace;
             const isOpening = openingWorkspace === workspace.path;
             const isDeleting = deletingWorkspacePath === workspace.path;
-            const isExpanded = expandedWorkspaces.has(workspace.path);
-            const wsWorktrees = worktreesByWorkspace[workspace.path] || [];
-            const hasExpandableWorktrees = wsWorktrees.some(
-              (worktree) => !worktree.is_default || Boolean(worktree.branch?.trim())
-            );
             const handleWorkspacePrimaryClick = () => {
               if (isOpening || isDeleting) return;
-              if (collapsed) {
-                onOpenWorkspace(workspace.path);
-                return;
-              }
-              if (isActive && (isExpanded || hasExpandableWorktrees)) {
-                onToggleWorkspaceExpand(workspace.path);
-                return;
-              }
               onOpenWorkspace(workspace.path);
             };
 
@@ -340,15 +294,11 @@ export function WorkspaceSection({
                     )}
                     onClick={() => {
                       if (isOpening || isDeleting) return;
-                      if (collapsed) {
-                        onOpenWorkspace(workspace.path);
-                      } else {
-                        onToggleWorkspaceExpand(workspace.path);
-                      }
+                      onOpenWorkspace(workspace.path);
                     }}
                   >
                     <HugeiconsIcon
-                      icon={isExpanded ? FolderOpenIcon : Folder01Icon}
+                      icon={Folder01Icon}
                       className="h-4 w-4"
                     />
                   </button>
@@ -364,61 +314,9 @@ export function WorkspaceSection({
                           {workspace.name}
                         </span>
                       </button>
-
-                      <button
-                        type="button"
-                        className={cn(
-                          'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md transition-all duration-200',
-                          'text-sidebar-foreground/50',
-                          'hover:bg-bg-tertiary/80 hover:text-sidebar-foreground/90'
-                        )}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onSetWorktreeCreateTarget(workspace.path);
-                        }}
-                        aria-label={t('workspacePanel.newWorktree')}
-                        title={t('workspacePanel.newWorktree')}
-                      >
-                        <HugeiconsIcon icon={PlusSignIcon} className="h-3 w-3" />
-                      </button>
                     </>
                   )}
                 </div>
-
-                {!collapsed && isExpanded && (
-                  <div
-                    className="ml-4 mt-2 space-y-1.5 overflow-hidden"
-                    style={{
-                      animation: 'slideDown 0.3s cubic-bezier(0.25, 1, 0.5, 1)',
-                    }}
-                  >
-                    <div className="relative pl-3">
-                      <div className="absolute left-0 top-0 bottom-0 w-px bg-gradient-to-b from-border-subtle/60 via-border-subtle/30 to-transparent" />
-
-                      <div className="space-y-1">
-                        {wsWorktrees.map((wt, idx) => {
-                          const wtSessionCount = worktreeSessionCounts[wt.id] ?? 0;
-                          return (
-                            <div
-                              key={wt.id}
-                              style={{
-                                animation: `fadeInUp 0.3s cubic-bezier(0.25, 1, 0.5, 1) ${idx * 0.05}s both`,
-                              }}
-                            >
-                              <WorktreeItem
-                                worktree={wt}
-                                isActive={activeWorktreeId === wt.id}
-                                sessionCount={wtSessionCount}
-                                onSelect={onWorktreeSelect}
-                                onDelete={onWorktreeDelete}
-                              />
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                )}
               </div>
             );
           })

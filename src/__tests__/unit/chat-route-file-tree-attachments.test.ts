@@ -119,7 +119,7 @@ describe('/api/chat file tree attachments', () => {
     fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
     fs.writeFileSync(sourcePath, 'export const demo = 1;\n', 'utf8');
 
-    const session = db.createSession('File Tree Attachment Path', '', '', workspaceDir, 'code', '', 'chat', undefined, 'codex');
+    const session = db.createSession('File Tree Attachment Path', '', '', workspaceDir, 'code', '', 'chat', 'codex');
 
     const response = await route.POST(new Request('http://localhost/api/chat', {
       method: 'POST',

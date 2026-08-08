@@ -5,12 +5,14 @@ import { clearTerminalSessionCache } from "@/lib/terminal-buffer-cache";
 import { subscribeSessionTabClosed } from '@/lib/events/app-event-bus';
 import { subscribeSessionRefresh } from '@/lib/events/session-refresh-hub';
 import { getExternalNavigationUrl, openExternalLink } from "@/lib/external-links";
+import { purgeObsoleteConversationStorage } from "@/lib/session-client-cache";
 
 const DESKTOP_BRIDGE_READY_EVENT = "noonflow:desktop-bridge-ready";
 
 export function DesktopBridgeProvider() {
   useEffect(() => {
     if (typeof window === "undefined") return;
+    purgeObsoleteConversationStorage();
     if (window.electronAPI) {
       window.dispatchEvent(new Event(DESKTOP_BRIDGE_READY_EVENT));
     }

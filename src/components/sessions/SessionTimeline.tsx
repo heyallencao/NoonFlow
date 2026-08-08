@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
@@ -37,8 +37,6 @@ interface TimelineMessageGroup {
   role: Message['role'];
   messages: Array<{ message: Message; index: number }>;
 }
-
-const getReplayReturnToStorageKey = (sessionId: string) => `noonflow:replay-return-to:${sessionId}`;
 
 function sanitizeReturnToPath(value?: string | null): string | null {
   return value && value.startsWith('/') && !value.startsWith('//') ? value : null;
@@ -284,26 +282,7 @@ export function SessionTimeline() {
   const runtime = searchParams.get('runtime');
   const returnToRaw = searchParams.get('returnTo');
   const queryReturnTo = sanitizeReturnToPath(returnToRaw);
-  const storedReturnTo =
-    typeof window !== 'undefined'
-      ? sanitizeReturnToPath(window.sessionStorage.getItem(getReplayReturnToStorageKey(sessionId)))
-      : null;
-  const returnTo = queryReturnTo ?? storedReturnTo ?? '/sessions';
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-
-    if (queryReturnTo) {
-      window.sessionStorage.setItem(getReplayReturnToStorageKey(sessionId), queryReturnTo);
-      return;
-    }
-
-    if (!storedReturnTo) {
-      window.sessionStorage.removeItem(getReplayReturnToStorageKey(sessionId));
-    }
-  }, [queryReturnTo, sessionId, storedReturnTo]);
+  const returnTo = queryReturnTo ?? '/sessions';
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['session-detail', sessionId, runtime],

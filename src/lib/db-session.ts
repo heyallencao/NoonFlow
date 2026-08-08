@@ -20,10 +20,8 @@ import type {
   SessionRuntimeStateRecord,
   SessionRuntimeStatePatch,
 } from './db-core';
-import { ensureDefaultWorktree, ensureWorktreeSchema, getWorktreeByPath } from './db-workspace';
 import { getDb } from './db-core';
 import { resolveMessageContentFromParts } from './message-content';
-import { isManagedWorktreeSubPath } from './workspace-utils';
 
 // Session Operations
 // ==========================================
@@ -257,33 +255,16 @@ export function createSession(
   mode?: string,
   providerId?: string,
   sessionType: 'chat' | 'terminal' = 'chat',
-  worktreeId?: string,
   assistantRuntime: AssistantRuntime = 'claude_code',
 ): ChatSession {
   const db = getDb();
-  ensureWorktreeSchema(db);
   const id = crypto.randomBytes(16).toString('hex');
   const now = new Date().toISOString().replace('T', ' ').split('.')[0];
   const wd = workingDirectory || '';
-  let resolvedWorktreeId = (worktreeId || '').trim();
-  if (!resolvedWorktreeId && wd) {
-    try {
-      const existingWorktree = getWorktreeByPath(wd);
-      if (existingWorktree?.id) {
-        resolvedWorktreeId = existingWorktree.id;
-      } else if (!isManagedWorktreeSubPath(wd)) {
-        // When creating from a workspace root, bind to its default worktree.
-        resolvedWorktreeId = ensureDefaultWorktree(wd, '').id;
-      }
-    } catch {
-      // Keep backward-compatible behavior if worktree inference fails.
-      resolvedWorktreeId = '';
-    }
-  }
   const projectName = path.basename(wd);
 
   db.prepare(
-    'INSERT INTO chat_sessions (id, title, session_type, created_at, updated_at, model, system_prompt, working_directory, sdk_session_id, project_name, status, mode, sdk_cwd, provider_id, worktree_id, assistant_runtime, assistant_runtime_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO chat_sessions (id, title, session_type, created_at, updated_at, model, system_prompt, working_directory, sdk_session_id, project_name, status, mode, sdk_cwd, provider_id, assistant_runtime, assistant_runtime_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   ).run(
     id,
     title || (sessionType === 'terminal' ? 'New Terminal' : 'New Chat'),
@@ -299,7 +280,6 @@ export function createSession(
     mode || 'code',
     wd,
     providerId || '',
-    resolvedWorktreeId,
     assistantRuntime,
     '',
   );

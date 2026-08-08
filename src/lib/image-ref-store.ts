@@ -3,7 +3,7 @@
  *
  * Keys:
  *   PENDING_KEY          – images uploaded via the input bar, not yet bound to a message
- *   LAST_GENERATED_KEY   – file paths of the most recently generated images (sessionStorage-backed)
+ *   LAST_GENERATED_KEY   – file paths of the most recently generated images (memory only)
  *   <message-id>         – images bound to a specific assistant message
  */
 import type { ReferenceImage } from '@/types';
@@ -12,28 +12,6 @@ export const PENDING_KEY = '__pending__';
 export const LAST_GENERATED_KEY = '__last_generated__';
 
 const store = new Map<string, ReferenceImage[]>();
-
-// ── sessionStorage persistence for last-generated paths ──
-
-const SS_KEY = 'imgref:last_generated';
-
-function loadLastGenerated(): void {
-  if (typeof window === 'undefined') return;
-  try {
-    const raw = sessionStorage.getItem(SS_KEY);
-    if (raw) {
-      const arr: ReferenceImage[] = JSON.parse(raw);
-      if (Array.isArray(arr) && arr.length > 0) {
-        store.set(LAST_GENERATED_KEY, arr);
-      }
-    }
-  } catch {
-    // ignore
-  }
-}
-
-// Auto-restore on module load (client only)
-loadLastGenerated();
 
 // ── Public helpers ──
 
@@ -69,19 +47,12 @@ export function transferPendingToMessage(messageId: string): void {
 }
 
 /**
- * Store generated image paths and persist to sessionStorage.
+ * Store generated image paths in memory for the current app process.
  * Called when image generation completes.
  */
 export function setLastGeneratedImages(paths: string[]): void {
   const images: ReferenceImage[] = paths.map(p => ({ mimeType: 'image/png', localPath: p }));
   store.set(LAST_GENERATED_KEY, images);
-  if (typeof window !== 'undefined') {
-    try {
-      sessionStorage.setItem(SS_KEY, JSON.stringify(images));
-    } catch {
-      // storage full
-    }
-  }
 }
 
 /**

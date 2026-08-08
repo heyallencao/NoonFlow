@@ -14,18 +14,6 @@ export function getLocalStorageSafe(): Storage | null {
   }
 }
 
-export function getSessionStorageSafe(): Storage | null {
-  if (typeof window === 'undefined') {
-    return null;
-  }
-
-  try {
-    return window.sessionStorage;
-  } catch {
-    return null;
-  }
-}
-
 export function readCompatibleStorageValue(
   storage: Storage | null | undefined,
   primaryKey: string,

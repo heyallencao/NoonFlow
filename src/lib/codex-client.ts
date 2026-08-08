@@ -120,6 +120,7 @@ interface CodexAttemptState {
   resumeSessionId?: string;
   sawConversationEvent: boolean;
   deferredErrorMessage: string | null;
+  nonTerminalErrorMessage: string | null;
 }
 
 interface CodexThreadEvent {
@@ -777,11 +778,11 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
                 });
                 return;
               case 'error':
-                emitEvent({
-                  type: 'error',
-                  data: typeof details.message === 'string'
-                    ? normalizeContextLimitErrorMessage(details.message)
-                    : 'Codex item error',
+                attemptState.nonTerminalErrorMessage = typeof details.message === 'string'
+                  ? normalizeContextLimitErrorMessage(details.message)
+                  : 'Codex item error';
+                console.warn('[codex-client] non-terminal item error', {
+                  message: attemptState.nonTerminalErrorMessage,
                 });
                 return;
               default:
@@ -881,6 +882,7 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
           resumeSessionId,
           sawConversationEvent: false,
           deferredErrorMessage: null,
+          nonTerminalErrorMessage: null,
         };
         let stdoutBuffer = '';
         let stderrBuffer = '';
@@ -970,16 +972,13 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
             return;
           }
 
-          if (!doneEmitted && (!code || code === 0)) {
-            flushPendingAgentMessageAsText();
-            emitDone();
-            finalizeAttempt();
-            return;
-          }
-
           const stderrText = stderrBuffer.trim();
           await handleAttemptFailure(
-            stderrText || `Codex exited with code ${code ?? 'unknown'}`,
+            stderrText
+              || attemptState.nonTerminalErrorMessage
+              || (code === 0
+                ? 'Codex stream ended before turn completion'
+                : `Codex exited with code ${code ?? 'unknown'}`),
             attemptState,
             resolvedModel,
           );
@@ -1016,6 +1015,7 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
           resumeSessionId,
           sawConversationEvent: false,
           deferredErrorMessage: null,
+          nonTerminalErrorMessage: null,
         };
         const runtimeConfig = buildSdkRuntimeConfig({
           backend,
@@ -1053,8 +1053,15 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
           }
 
           if (!doneEmitted) {
-            flushPendingAgentMessageAsText();
-            emitDone();
+            await handleAttemptFailure(
+              new Error(
+                attemptState.nonTerminalErrorMessage
+                  || 'Codex stream ended before turn completion',
+              ),
+              attemptState,
+              resolvedModel,
+            );
+            return;
           }
           finalizeAttempt();
         } catch (error) {

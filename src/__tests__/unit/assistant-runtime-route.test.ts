@@ -177,7 +177,6 @@ describe('/api/chat assistant runtime routing', () => {
       'code',
       '',
       'chat',
-      undefined,
       'codex',
     );
 
@@ -217,7 +216,6 @@ describe('/api/chat assistant runtime routing', () => {
       'code',
       '',
       'chat',
-      undefined,
       'codex',
     );
 

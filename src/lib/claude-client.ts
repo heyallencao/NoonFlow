@@ -16,10 +16,9 @@ import { SETTING_KEYS } from '@/types';
 import { CLAUDE_AUTH_MODE_KEY, inferAssistantAuthMode } from './assistant-auth';
 import { registerPendingPermission } from './permission-registry';
 import { registerConversation, unregisterConversation } from './conversation-registry';
-import { getSetting, getActiveProvider, createPermissionRequest } from './db';
+import { getSetting, getActiveProvider } from './db';
 import { findGitBash, getExpandedPath } from './platform';
 import { getShellEnvironment } from './environment';
-import { notifyPermissionRequest, notifyGeneric } from './telegram-bot';
 import { retryStrategy, RetryableError } from './retry-strategy';
 import { sessionStateManager } from './session-state-manager';
 import { isContextLimitExceededError, normalizeContextLimitErrorMessage } from './context-budget';
@@ -366,30 +365,11 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
             description: undefined,
           };
 
-          // Persist permission request to DB for audit/recovery
-          const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString().replace('T', ' ').split('.')[0];
-          try {
-            createPermissionRequest({
-              id: permissionRequestId,
-              sessionId,
-              sdkSessionId: sdkSessionId || '',
-              toolName,
-              toolInput: JSON.stringify(input),
-              decisionReason: opts.decisionReason || '',
-              expiresAt,
-            });
-          } catch (e) {
-            console.warn('[claude-client] Failed to persist permission request to DB:', e);
-          }
-
           // Send permission_request SSE event to the client
           controller.enqueue(formatSSE({
             type: 'permission_request',
             data: JSON.stringify(permEvent),
           }));
-
-          // Notify via Telegram (fire-and-forget)
-          notifyPermissionRequest(toolName, input as Record<string, unknown>, telegramOpts).catch(() => {});
 
           // Notify runtime status change
           if (sessionId) {
@@ -410,13 +390,6 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
           return result;
         };
 
-        // Telegram notification context for hooks
-        const telegramOpts = {
-          sessionId,
-          sessionTitle: undefined as string | undefined,
-          workingDirectory,
-        };
-
         // Hooks: capture notifications and tool completion events
         queryOptions.hooks = {
           Notification: [{
@@ -430,8 +403,6 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
                   message: notif.message,
                 }),
               }));
-              // Forward to Telegram (fire-and-forget)
-              notifyGeneric(notif.title || '', notif.message || '', telegramOpts).catch(() => {});
               return {};
             }],
           }],

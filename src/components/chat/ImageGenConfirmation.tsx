@@ -27,10 +27,11 @@ interface ImageGenConfirmationProps {
 
 type Status = 'idle' | 'generating' | 'completed' | 'error';
 
-/** Stable key for persisting generation results in localStorage */
-function storageKey(prompt: string, sessionId?: string): string {
+const imageGenerationResultCache = new Map<string, ImageGenResult>();
+
+function cacheKey(prompt: string, sessionId?: string): string {
   const prefix = sessionId ? `${sessionId}:` : '';
-  return `imggen:${prefix}${prompt.slice(0, 80)}`;
+  return `${prefix}${prompt.slice(0, 80)}`;
 }
 
 export function ImageGenConfirmation({
@@ -58,19 +59,12 @@ export function ImageGenConfirmation({
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Restore completed result from localStorage on mount
+  // Restore only from the current renderer process.
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(storageKey(initialPrompt, sessionId));
-      if (saved) {
-        const parsed: ImageGenResult = JSON.parse(saved);
-        if (parsed.images && parsed.images.length > 0) {
-          setResult(parsed);
-          setStatus('completed');
-        }
-      }
-    } catch {
-      // ignore
+    const cached = imageGenerationResultCache.get(cacheKey(initialPrompt, sessionId));
+    if (cached?.images.length) {
+      setResult(cached);
+      setStatus('completed');
     }
   }, [initialPrompt, sessionId]);
 
@@ -127,21 +121,7 @@ export function ImageGenConfirmation({
         setResult(genResult);
         setStatus('completed');
 
-        // Store lightweight version in localStorage
-        try {
-          const storable = {
-            id: genResult.id,
-            text: genResult.text,
-            images: genResult.images.map(img => ({
-              mimeType: img.mimeType,
-              localPath: img.localPath,
-              data: '',
-            })),
-          };
-          localStorage.setItem(storageKey(initialPrompt, sessionId), JSON.stringify(storable));
-        } catch {
-          // storage full
-        }
+        imageGenerationResultCache.set(cacheKey(initialPrompt, sessionId), genResult);
 
         // Persist result to DB by replacing image-gen-request with image-gen-result
         {
@@ -196,11 +176,7 @@ export function ImageGenConfirmation({
   const handleRegenerate = useCallback(() => {
     setResult(null);
     setStatus('idle');
-    try {
-      localStorage.removeItem(storageKey(initialPrompt, sessionId));
-    } catch {
-      // ignore
-    }
+    imageGenerationResultCache.delete(cacheKey(initialPrompt, sessionId));
   }, [initialPrompt, sessionId]);
 
   // ── Completed: show result only ──

@@ -836,12 +836,14 @@ describe('chat-timeline-store', () => {
     );
   });
 
-  it('avoids sessionStorage writes for active streaming timeline syncs', () => {
+  it('keeps chat timeline caches in memory without sessionStorage writes', () => {
+    let sessionStorageReads = 0;
     let sessionStorageWrites = 0;
     const sessionStorageData = new Map<string, string>();
     (globalThis as Record<string, unknown>).window = {
       sessionStorage: {
         getItem(key: string) {
+          sessionStorageReads += 1;
           return sessionStorageData.get(key) ?? null;
         },
         setItem(key: string, value: string) {
@@ -862,6 +864,7 @@ describe('chat-timeline-store', () => {
       sessionResolved: true,
     });
     const writesAfterHydrate = sessionStorageWrites;
+    assert.equal(writesAfterHydrate, 0);
 
     useChatTimelineStore.getState().upsertOptimisticAssistant('session-1', 'msg-123');
     useChatSessionViewStore.getState().syncMessagesFromTimeline('session-1');
@@ -887,9 +890,10 @@ describe('chat-timeline-store', () => {
     );
     useChatSessionViewStore.getState().syncMessagesFromTimeline('session-1');
 
-    assert.equal(writesAfterHydrate, 1);
+    assert.equal(writesAfterHydrate, 0);
     assert.equal(writesAfterShellSync, writesAfterHydrate);
     assert.equal(sessionStorageWrites, writesAfterShellSync);
+    assert.equal(sessionStorageReads, 0);
   });
 
   it('clears and evicts timeline sessions when the compatibility store does', () => {

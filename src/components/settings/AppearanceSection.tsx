@@ -5,8 +5,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useTranslation } from "@/hooks/useTranslation";
 import { useFontSize } from "@/components/layout/FontSizeProvider";
 import { SUPPORTED_LOCALES, type Locale } from "@/i18n";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { TextFontIcon, Globe02Icon } from "@hugeicons/core-free-icons";
 
 export function AppearanceSection() {
   const { t, locale, setLocale } = useTranslation();

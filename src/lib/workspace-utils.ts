@@ -7,20 +7,8 @@ import {
   writeStorageValue,
 } from '@/lib/browser-storage';
 
-const MANAGED_WORKTREE_PATTERNS = [
-  '/.noonflow/worktrees/',
-  '\\.noonflow\\worktrees\\',
-  '/.monolith/worktrees/',
-  '\\.monolith\\worktrees\\',
-];
-
-/** Returns true if the path is a managed worktree sub-path (not a real workspace) */
-export function isManagedWorktreeSubPath(p: string): boolean {
-  return MANAGED_WORKTREE_PATTERNS.some((pattern) => p.includes(pattern));
-}
-
-export const WORKSPACE_STORAGE_KEY = 'noonflow:workspace-folders';
-export const LEGACY_WORKSPACE_STORAGE_KEYS = ['monolith:workspace-folders'] as const;
+export const WORKSPACE_STORAGE_KEY = 'noonflow:opened-workspaces';
+export const LEGACY_WORKSPACE_STORAGE_KEYS = [] as const;
 export const LAST_WORKSPACE_KEY = 'noonflow:last-working-directory';
 export const LEGACY_LAST_WORKSPACE_KEYS = ['monolith:last-working-directory'] as const;
 export const HIDDEN_WORKSPACE_STORAGE_KEY = 'noonflow:hidden-workspaces';
@@ -59,18 +47,12 @@ function loadWorkspaceArray(key: string, legacyKeys: readonly string[] = []): st
 function saveWorkspaceArray(
   key: string,
   paths: string[],
-  legacyKeys: readonly string[] = [],
 ): string[] {
   const next = dedupeWorkspacePaths(paths);
   if (!canUseLocalStorage()) return next;
 
   writeStorageValue(getLocalStorageSafe(), key, JSON.stringify(next));
   return next;
-}
-
-function sameWorkspaceOrder(left: string[], right: string[]): boolean {
-  if (left.length !== right.length) return false;
-  return left.every((value, index) => value === right[index]);
 }
 
 export function normalizeWorkspacePath(input: string): string {
@@ -124,7 +106,7 @@ export function loadStoredWorkspaces(): string[] {
 }
 
 export function saveStoredWorkspaces(paths: string[]): string[] {
-  return saveWorkspaceArray(WORKSPACE_STORAGE_KEY, paths, LEGACY_WORKSPACE_STORAGE_KEYS);
+  return saveWorkspaceArray(WORKSPACE_STORAGE_KEY, paths);
 }
 
 export function loadHiddenWorkspaces(): string[] {
@@ -132,7 +114,7 @@ export function loadHiddenWorkspaces(): string[] {
 }
 
 export function saveHiddenWorkspaces(paths: string[]): string[] {
-  return saveWorkspaceArray(HIDDEN_WORKSPACE_STORAGE_KEY, paths, LEGACY_HIDDEN_WORKSPACE_STORAGE_KEYS);
+  return saveWorkspaceArray(HIDDEN_WORKSPACE_STORAGE_KEY, paths);
 }
 
 export function loadLastWorkspace(): string {
@@ -163,14 +145,9 @@ export function loadWorkspaceStorageState(): WorkspaceStorageState {
   const storedWorkspaces = loadStoredWorkspaces();
   const hiddenWorkspaces = loadHiddenWorkspaces();
   const lastWorkspace = loadLastWorkspace();
-  const workspaces = dedupeWorkspacePaths([...storedWorkspaces, lastWorkspace]);
-
-  if (!sameWorkspaceOrder(storedWorkspaces, workspaces)) {
-    saveStoredWorkspaces(workspaces);
-  }
 
   return {
-    workspaces,
+    workspaces: storedWorkspaces,
     hiddenWorkspaces,
     lastWorkspace,
   };
@@ -196,7 +173,7 @@ export function buildWorkspaceList({
 
   for (const workspacePath of workspaces) {
     const normalized = normalizeWorkspacePath(workspacePath);
-    if (!normalized || isManagedWorktreeSubPath(normalized)) continue;
+    if (!normalized) continue;
     map.set(normalized, {
       path: normalized,
       name: getWorkspaceName(normalized),
@@ -209,16 +186,10 @@ export function buildWorkspaceList({
 
   for (const session of sessions) {
     const normalized = normalizeWorkspacePath(session.working_directory || '');
-    if (!normalized || isManagedWorktreeSubPath(normalized)) continue;
+    if (!normalized) continue;
 
-    const item = map.get(normalized) || {
-      path: normalized,
-      name: session.project_name || getWorkspaceName(normalized),
-      sessionCount: 0,
-      latestUpdatedAt: 0,
-      latestSessionId: null,
-      latestSessionUpdatedAt: 0,
-    };
+    const item = map.get(normalized);
+    if (!item) continue;
 
     item.sessionCount += 1;
 
@@ -244,7 +215,7 @@ export function buildWorkspaceList({
   const workspaceIndex = new Map<string, number>();
   for (let i = 0; i < workspaces.length; i++) {
     const normalized = normalizeWorkspacePath(workspaces[i]);
-    if (normalized && !isManagedWorktreeSubPath(normalized)) {
+    if (normalized) {
       workspaceIndex.set(normalized, i);
     }
   }

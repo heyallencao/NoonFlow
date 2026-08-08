@@ -1,12 +1,4 @@
 import type { PermissionRequestEvent } from '@/types';
-import {
-  getLocalStorageSafe,
-  readCompatibleStorageValue,
-  writeStorageValue,
-} from '@/lib/browser-storage';
-
-const PERMISSION_MEMORY_KEY = 'noonflow:permission-memory';
-const LEGACY_PERMISSION_MEMORY_KEYS = ['monolith:permission-memory'] as const;
 
 export type PermissionRiskLevel = 'low' | 'medium' | 'high';
 
@@ -16,41 +8,7 @@ interface RememberedPermissionScope {
   updatedAt: number;
 }
 
-type PermissionMemoryMap = Record<string, RememberedPermissionScope>;
-
-function canUseLocalStorage() {
-  return typeof window !== 'undefined';
-}
-
-function readPermissionMemory(): PermissionMemoryMap {
-  if (!canUseLocalStorage()) {
-    return {};
-  }
-
-  try {
-    const raw = readCompatibleStorageValue(
-      getLocalStorageSafe(),
-      PERMISSION_MEMORY_KEY,
-      LEGACY_PERMISSION_MEMORY_KEYS,
-    );
-    if (!raw) {
-      return {};
-    }
-
-    const parsed = JSON.parse(raw) as PermissionMemoryMap;
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function writePermissionMemory(memory: PermissionMemoryMap) {
-  if (!canUseLocalStorage()) {
-    return;
-  }
-
-  writeStorageValue(getLocalStorageSafe(), PERMISSION_MEMORY_KEY, JSON.stringify(memory));
-}
+const permissionMemory = new Map<string, RememberedPermissionScope>();
 
 function extractPathLikeValue(toolInput: Record<string, unknown>): string {
   const candidates = [
@@ -62,26 +20,12 @@ function extractPathLikeValue(toolInput: Record<string, unknown>): string {
     toolInput.blockedPath,
     toolInput.destination,
   ];
-
-  for (const candidate of candidates) {
-    if (typeof candidate === 'string' && candidate.trim()) {
-      return candidate.trim();
-    }
-  }
-
-  return '';
+  return candidates.find((candidate): candidate is string => typeof candidate === 'string' && Boolean(candidate.trim()))?.trim() || '';
 }
 
 function extractCommandValue(toolInput: Record<string, unknown>): string {
   const candidates = [toolInput.command, toolInput.cmd];
-
-  for (const candidate of candidates) {
-    if (typeof candidate === 'string' && candidate.trim()) {
-      return candidate.trim();
-    }
-  }
-
-  return '';
+  return candidates.find((candidate): candidate is string => typeof candidate === 'string' && Boolean(candidate.trim()))?.trim() || '';
 }
 
 export function describePermissionScope(
@@ -89,69 +33,36 @@ export function describePermissionScope(
   toolInput: Record<string, unknown> = request.toolInput,
 ): string {
   const command = extractCommandValue(toolInput);
-  if (command) {
-    return command.length > 120 ? `${command.slice(0, 117)}...` : command;
-  }
-
-  const path = extractPathLikeValue(toolInput);
-  if (path) {
-    return path;
-  }
-
-  if (request.blockedPath) {
-    return request.blockedPath;
-  }
-
-  return 'Current session';
+  if (command) return command.length > 120 ? `${command.slice(0, 117)}...` : command;
+  return extractPathLikeValue(toolInput) || request.blockedPath || 'Current session';
 }
 
 export function getPermissionRiskLevel(request: PermissionRequestEvent): PermissionRiskLevel {
   const toolName = request.toolName.toLowerCase();
-  const toolInput = request.toolInput || {};
-  const command = extractCommandValue(toolInput).toLowerCase();
-  const path = extractPathLikeValue(toolInput).toLowerCase();
-
+  const command = extractCommandValue(request.toolInput || {}).toLowerCase();
+  const targetPath = extractPathLikeValue(request.toolInput || {}).toLowerCase();
   if (
-    command.includes('rm ') ||
-    command.includes('sudo ') ||
-    command.includes('git reset --hard') ||
-    command.includes('chmod 777') ||
-    path.startsWith('/etc') ||
-    path.startsWith('/usr') ||
-    path.startsWith('/var')
-  ) {
-    return 'high';
-  }
-
-  if (
-    toolName.includes('bash') ||
-    toolName.includes('execute') ||
-    toolName.includes('write') ||
-    toolName.includes('edit') ||
-    toolName.includes('delete')
-  ) {
-    return 'medium';
-  }
-
+    command.includes('rm ')
+    || command.includes('sudo ')
+    || command.includes('git reset --hard')
+    || command.includes('chmod 777')
+    || targetPath.startsWith('/etc')
+    || targetPath.startsWith('/usr')
+    || targetPath.startsWith('/var')
+  ) return 'high';
+  if (/bash|execute|write|edit|delete/.test(toolName)) return 'medium';
   return 'low';
 }
 
 export function getPermissionRiskReason(request: PermissionRequestEvent): string {
-  const riskLevel = getPermissionRiskLevel(request);
-
-  switch (riskLevel) {
-    case 'high':
-      return 'Touches destructive commands or sensitive paths.';
-    case 'medium':
-      return 'Can modify files or execute commands.';
-    default:
-      return 'Mostly scoped to inspection or session flow.';
-  }
+  const level = getPermissionRiskLevel(request);
+  if (level === 'high') return 'Touches destructive commands or sensitive paths.';
+  if (level === 'medium') return 'Can modify files or execute commands.';
+  return 'Mostly scoped to inspection or session flow.';
 }
 
 export function getRememberedPermissionScope(toolName: string): RememberedPermissionScope | null {
-  const memory = readPermissionMemory();
-  return memory[toolName] || null;
+  return permissionMemory.get(toolName) || null;
 }
 
 export function rememberPermissionScope(
@@ -159,15 +70,10 @@ export function rememberPermissionScope(
   decision: 'allow' | 'allow_session' | 'deny',
   toolInput?: Record<string, unknown>,
 ) {
-  if (decision === 'deny') {
-    return;
-  }
-
-  const memory = readPermissionMemory();
-  memory[request.toolName] = {
+  if (decision === 'deny') return;
+  permissionMemory.set(request.toolName, {
     toolName: request.toolName,
     scope: describePermissionScope(request, toolInput || request.toolInput),
     updatedAt: Date.now(),
-  };
-  writePermissionMemory(memory);
+  });
 }

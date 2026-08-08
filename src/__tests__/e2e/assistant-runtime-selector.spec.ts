@@ -23,7 +23,6 @@ test.describe('Assistant Runtime Selector', () => {
         system_prompt: '',
         working_directory: '/tmp/assistant-runtime-test',
         sdk_session_id: '',
-        worktree_id: '',
         project_name: 'assistant-runtime-test',
         status: 'active',
         mode: 'code',

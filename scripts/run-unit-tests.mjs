@@ -7,7 +7,6 @@ const unitTestsDir = path.resolve('src/__tests__/unit');
 const excludedStableTests = new Set([
   'claude-session-parser.test.ts',
   'codex-session-parser.test.ts',
-  'worktree-limit-cleanup.test.ts',
 ]);
 
 function collectTestFiles(dirPath) {

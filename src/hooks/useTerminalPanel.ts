@@ -1,23 +1,11 @@
 'use client';
 
 import { useState, useCallback, useEffect, useRef } from 'react';
-import {
-  getLocalStorageSafe,
-  readCompatibleStorageValue,
-  writeStorageValue,
-} from '@/lib/browser-storage';
+import { readTerminalPanelMemory, writeTerminalPanelMemory } from '@/lib/terminal-panel-memory';
 
 const TERMINAL_PANEL_MIN_HEIGHT = 150;
 const TERMINAL_PANEL_MAX_HEIGHT = 600;
 const TERMINAL_PANEL_DEFAULT_HEIGHT = 280;
-
-function storageKey(workspace: string) {
-  return `noonflow:terminal-panel:${workspace}`;
-}
-
-function legacyStorageKeys(workspace: string) {
-  return [`monolith:terminal-panel:${workspace}`];
-}
 
 interface TerminalPanelState {
   isOpen: boolean;
@@ -25,35 +13,18 @@ interface TerminalPanelState {
   terminalSessionId: string | null;
 }
 
-function loadPersistedState(workspace: string): { isOpen: boolean; height: number; sessionId: string | null } {
-  if (!workspace || typeof window === 'undefined') {
+function loadVolatileState(workspace: string): { isOpen: boolean; height: number; sessionId: string | null } {
+  if (!workspace) {
     return { isOpen: false, height: TERMINAL_PANEL_DEFAULT_HEIGHT, sessionId: null };
   }
-  try {
-    const raw = readCompatibleStorageValue(
-      getLocalStorageSafe(),
-      storageKey(workspace),
-      legacyStorageKeys(workspace),
-    );
-    if (!raw) return { isOpen: false, height: TERMINAL_PANEL_DEFAULT_HEIGHT, sessionId: null };
-    const parsed = JSON.parse(raw);
-    return {
-      isOpen: Boolean(parsed.isOpen),
-      height: clampHeight(parsed.height ?? TERMINAL_PANEL_DEFAULT_HEIGHT),
-      sessionId: parsed.sessionId ?? null,
-    };
-  } catch {
-    return { isOpen: false, height: TERMINAL_PANEL_DEFAULT_HEIGHT, sessionId: null };
-  }
+  const state = readTerminalPanelMemory(workspace);
+  return state
+    ? { isOpen: state.isOpen, height: clampHeight(state.height), sessionId: state.sessionId }
+    : { isOpen: false, height: TERMINAL_PANEL_DEFAULT_HEIGHT, sessionId: null };
 }
 
-function persistState(workspace: string, state: { isOpen: boolean; height: number; sessionId: string | null }) {
-  if (!workspace || typeof window === 'undefined') return;
-  try {
-    writeStorageValue(getLocalStorageSafe(), storageKey(workspace), JSON.stringify(state));
-  } catch {
-    // best effort
-  }
+function rememberState(workspace: string, state: { isOpen: boolean; height: number; sessionId: string | null }) {
+  writeTerminalPanelMemory(workspace, state);
 }
 
 function clampHeight(h: number): number {
@@ -62,7 +33,7 @@ function clampHeight(h: number): number {
 
 export function useTerminalPanel(workspace: string) {
   const [state, setState] = useState<TerminalPanelState>(() => {
-    const persisted = loadPersistedState(workspace);
+    const persisted = loadVolatileState(workspace);
     return {
       isOpen: persisted.isOpen,
       height: persisted.height,
@@ -71,6 +42,7 @@ export function useTerminalPanel(workspace: string) {
   });
 
   const creatingRef = useRef(false);
+  const skipNextRememberRef = useRef(true);
 
   const isTerminalSessionValid = useCallback(async (sessionId: string): Promise<boolean> => {
     if (!sessionId) return false;
@@ -88,7 +60,8 @@ export function useTerminalPanel(workspace: string) {
 
   // Re-load when workspace changes
   useEffect(() => {
-    const persisted = loadPersistedState(workspace);
+    skipNextRememberRef.current = true;
+    const persisted = loadVolatileState(workspace);
     setState({
       isOpen: persisted.isOpen,
       height: persisted.height,
@@ -115,9 +88,13 @@ export function useTerminalPanel(workspace: string) {
     };
   }, [isTerminalSessionValid, workspace]);
 
-  // Persist state changes
+  // Keep state only for the lifetime of this renderer process.
   useEffect(() => {
-    persistState(workspace, {
+    if (skipNextRememberRef.current) {
+      skipNextRememberRef.current = false;
+      return;
+    }
+    rememberState(workspace, {
       isOpen: state.isOpen,
       height: state.height,
       sessionId: state.terminalSessionId,

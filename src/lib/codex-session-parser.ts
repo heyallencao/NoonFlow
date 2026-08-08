@@ -4,8 +4,9 @@ import os from 'os';
 import path from 'path';
 import type { MessageContentBlock } from '@/types';
 import { summarizeSessionPreview, type SessionPreviewTag } from '@/lib/session-preview';
+import { iterateJsonlLines } from '@/lib/jsonl-reader';
 
-const MAX_FILE_SIZE = 50 * 1024 * 1024;
+const SESSION_LIST_SAMPLE_BYTES = 128 * 1024;
 
 export interface CodexSessionInfo {
   sessionId: string;
@@ -24,6 +25,22 @@ export interface CodexSessionInfo {
   updatedAt: string;
   fileSize: number;
 }
+
+export interface CodexSessionListOptions {
+  projectPaths?: readonly string[];
+  limit?: number;
+}
+
+export interface CodexSessionPage {
+  sessions: CodexSessionInfo[];
+  total: number;
+}
+
+const fallbackSessionInfoCache = new Map<string, {
+  size: number;
+  mtimeMs: number;
+  info: CodexSessionInfo;
+}>();
 
 export interface ParsedMessage {
   role: 'user' | 'assistant';
@@ -107,20 +124,26 @@ function resolveCodexStateDbPath(): string | null {
   }
 }
 
-function readJsonlLines(filePath: string): { lines: string[]; stat: fs.Stats } | null {
-  if (!fs.existsSync(filePath)) {
-    return null;
+function readJsonlSampleLines(filePath: string, stat: fs.Stats): string[] {
+  if (stat.size <= SESSION_LIST_SAMPLE_BYTES * 2) {
+    return fs.readFileSync(filePath, 'utf-8').split('\n').filter((line) => line.trim());
   }
 
-  const stat = fs.statSync(filePath);
-  if (stat.size > MAX_FILE_SIZE) {
-    console.warn(`[codex-session-parser] Skipping ${filePath}: file too large (${(stat.size / 1024 / 1024).toFixed(1)} MB)`);
-    return null;
+  const descriptor = fs.openSync(filePath, 'r');
+  try {
+    const head = Buffer.allocUnsafe(SESSION_LIST_SAMPLE_BYTES);
+    const tail = Buffer.allocUnsafe(SESSION_LIST_SAMPLE_BYTES);
+    const headBytes = fs.readSync(descriptor, head, 0, head.length, 0);
+    const tailStart = Math.max(0, stat.size - tail.length);
+    const tailBytes = fs.readSync(descriptor, tail, 0, tail.length, tailStart);
+    const headLines = head.subarray(0, headBytes).toString('utf-8').split('\n');
+    headLines.pop();
+    const tailLines = tail.subarray(0, tailBytes).toString('utf-8').split('\n');
+    if (tailStart > 0) tailLines.shift();
+    return [...headLines, ...tailLines].filter((line) => line.trim());
+  } finally {
+    fs.closeSync(descriptor);
   }
-
-  const content = fs.readFileSync(filePath, 'utf-8');
-  const lines = content.split('\n').filter((line) => line.trim());
-  return { lines, stat };
 }
 
 function readCodexHistoryPreviewMap(): Map<string, string> {
@@ -228,13 +251,17 @@ function readThreads(): CodexThreadRow[] {
   let db: Database.Database | null = null;
   try {
     db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    const columns = db.prepare('PRAGMA table_info(threads)').all() as Array<{ name: string }>;
+    const modelSelection = columns.some((column) => column.name === 'model')
+      ? 'model'
+      : 'NULL AS model';
     return db.prepare(`
       SELECT
         id,
         rollout_path,
         created_at,
         updated_at,
-        model,
+        ${modelSelection},
         model_provider,
         cwd,
         title,
@@ -263,13 +290,17 @@ function readThread(sessionId: string): CodexThreadRow | null {
   let db: Database.Database | null = null;
   try {
     db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    const columns = db.prepare('PRAGMA table_info(threads)').all() as Array<{ name: string }>;
+    const modelSelection = columns.some((column) => column.name === 'model')
+      ? 'model'
+      : 'NULL AS model';
     return db.prepare(`
       SELECT
         id,
         rollout_path,
         created_at,
         updated_at,
-        model,
+        ${modelSelection},
         model_provider,
         cwd,
         title,
@@ -352,7 +383,7 @@ function isToolCallOutputType(type: unknown): boolean {
 function buildCodexInfo(
   thread: CodexThreadRow | null,
   stat: fs.Stats,
-  lines: string[],
+  lines: Iterable<string>,
   rolloutPath: string,
   historyPreviewMap?: Map<string, string>,
 ): CodexSessionInfo {
@@ -504,16 +535,20 @@ export function listCodexSessions(): CodexSessionInfo[] {
   const threads = readThreads();
   const historyPreviewMap = readCodexHistoryPreviewMap();
   const sessionsById = new Map<string, CodexSessionInfo>();
+  const indexedRolloutPaths = new Set<string>();
 
   for (const thread of threads) {
     try {
-      const result = readJsonlLines(thread.rollout_path);
-      if (!result) {
+      if (!fs.existsSync(thread.rollout_path)) {
         continue;
       }
-
-      const info = buildCodexInfo(thread, result.stat, result.lines, thread.rollout_path, historyPreviewMap);
+      const stat = fs.statSync(thread.rollout_path);
+      const lines = stat.size <= SESSION_LIST_SAMPLE_BYTES * 2
+        ? readJsonlSampleLines(thread.rollout_path, stat)
+        : [];
+      const info = buildCodexInfo(thread, stat, lines, thread.rollout_path, historyPreviewMap);
       sessionsById.set(info.sessionId, info);
+      indexedRolloutPaths.add(thread.rollout_path);
     } catch {
       continue;
     }
@@ -521,17 +556,29 @@ export function listCodexSessions(): CodexSessionInfo[] {
 
   for (const rolloutPath of listCodexRolloutFiles()) {
     try {
+      if (indexedRolloutPaths.has(rolloutPath)) {
+        continue;
+      }
       const sessionId = extractSessionIdFromRolloutPath(rolloutPath);
       if (sessionId && sessionsById.has(sessionId)) {
         continue;
       }
 
-      const result = readJsonlLines(rolloutPath);
-      if (!result) {
-        continue;
+      const stat = fs.statSync(rolloutPath);
+      const cached = fallbackSessionInfoCache.get(rolloutPath);
+      let info: CodexSessionInfo;
+      if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+        info = cached.info;
+      } else {
+        info = buildCodexInfo(
+          null,
+          stat,
+          readJsonlSampleLines(rolloutPath, stat),
+          rolloutPath,
+          historyPreviewMap,
+        );
+        fallbackSessionInfoCache.set(rolloutPath, { size: stat.size, mtimeMs: stat.mtimeMs, info });
       }
-
-      const info = buildCodexInfo(null, result.stat, result.lines, rolloutPath, historyPreviewMap);
       sessionsById.set(info.sessionId, info);
     } catch {
       continue;
@@ -543,6 +590,68 @@ export function listCodexSessions(): CodexSessionInfo[] {
   return sessions;
 }
 
+function normalizeProjectPath(projectPath: string): string {
+  return projectPath.replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+/**
+ * Fast path used by the Memory page. Codex's native threads table supplies
+ * ordering and workspace ownership, so only metadata for the requested page
+ * is read from rollout JSONL files.
+ */
+export function listCodexSessionPage(options: CodexSessionListOptions = {}): CodexSessionPage {
+  const allowedProjectPaths = new Set(
+    (options.projectPaths || []).map(normalizeProjectPath).filter(Boolean),
+  );
+  if (allowedProjectPaths.size === 0) {
+    const sessions = listCodexSessions();
+    const limit = typeof options.limit === 'number' && Number.isFinite(options.limit)
+      ? Math.max(0, Math.trunc(options.limit))
+      : sessions.length;
+    return { sessions: sessions.slice(0, limit), total: sessions.length };
+  }
+
+  const allThreads = readThreads();
+  const threads = allThreads.filter(
+    (thread) => allowedProjectPaths.has(normalizeProjectPath(thread.cwd || ''))
+      && fs.existsSync(thread.rollout_path),
+  );
+
+  // Older Codex versions may not have populated the native threads index.
+  if (threads.length === 0 && allThreads.length > 0) {
+    return { sessions: [], total: 0 };
+  }
+
+  if (threads.length === 0) {
+    const sessions = listCodexSessions().filter(
+      (session) => allowedProjectPaths.has(normalizeProjectPath(session.cwd || session.projectPath)),
+    );
+    const limit = typeof options.limit === 'number' && Number.isFinite(options.limit)
+      ? Math.max(0, Math.trunc(options.limit))
+      : sessions.length;
+    return { sessions: sessions.slice(0, limit), total: sessions.length };
+  }
+
+  const limit = typeof options.limit === 'number' && Number.isFinite(options.limit)
+    ? Math.max(0, Math.trunc(options.limit))
+    : threads.length;
+  const sessions: CodexSessionInfo[] = [];
+  for (const thread of threads.slice(0, limit)) {
+    try {
+      const stat = fs.statSync(thread.rollout_path);
+      const lines = stat.size <= SESSION_LIST_SAMPLE_BYTES * 2
+        ? readJsonlSampleLines(thread.rollout_path, stat)
+        : [];
+      sessions.push(buildCodexInfo(thread, stat, lines, thread.rollout_path));
+    } catch {
+      continue;
+    }
+  }
+
+  sessions.sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
+  return { sessions, total: threads.length };
+}
+
 export function parseCodexSession(sessionId: string): ParsedSession | null {
   const thread = readThread(sessionId);
   const rolloutPath = thread?.rollout_path || findRolloutPathForSession(sessionId);
@@ -550,17 +659,22 @@ export function parseCodexSession(sessionId: string): ParsedSession | null {
     return null;
   }
 
-  const result = readJsonlLines(rolloutPath);
-  if (!result) {
+  if (!fs.existsSync(rolloutPath)) {
     return null;
   }
 
-  const { lines, stat } = result;
-  const info = buildCodexInfo(thread, stat, lines, rolloutPath, readCodexHistoryPreviewMap());
+  const stat = fs.statSync(rolloutPath);
+  const info = buildCodexInfo(
+    thread,
+    stat,
+    iterateJsonlLines(rolloutPath),
+    rolloutPath,
+    readCodexHistoryPreviewMap(),
+  );
   const messages: ParsedMessage[] = [];
   const pendingToolCalls = new Map<string, PendingToolCall>();
 
-  for (const line of lines) {
+  for (const line of iterateJsonlLines(rolloutPath)) {
     try {
       const entry = JSON.parse(line) as CodexRolloutEntry;
       const timestamp = entry.timestamp || info.updatedAt;

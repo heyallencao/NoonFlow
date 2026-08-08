@@ -6,8 +6,6 @@ interface ElectronInstallAPI {
   checkPrerequisites: () => Promise<{
     hasNode: boolean;
     nodeVersion?: string;
-    hasGit: boolean;
-    gitVersion?: string;
     hasClaude: boolean;
     claudeVersion?: string;
     hasCodex: boolean;
@@ -19,7 +17,6 @@ interface ElectronInstallAPI {
   }>;
   start: (options?: {
     includeNode?: boolean;
-    installGit?: boolean;
     installClaude?: boolean;
     installCodex?: boolean;
     initializeClaude?: boolean;
@@ -91,9 +88,6 @@ interface ElectronAPI {
     }) => Promise<{ canceled: boolean; filePaths: string[] }>;
   };
   install: ElectronInstallAPI;
-  bridge: {
-    isActive: () => Promise<boolean>;
-  };
   environment: {
     getShellEnv: () => Promise<Record<string, string>>;
   };

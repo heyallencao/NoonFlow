@@ -23,9 +23,6 @@ const RUNTIME_LABEL: Record<RuntimeTarget, string> = {
   codex: "Codex",
 };
 
-const GIT_LABEL = "Git";
-const GIT_BINARY = "git";
-
 let installState: InstallState = {
   status: "idle",
   currentStep: null,
@@ -177,7 +174,6 @@ async function runCommand(
 
 function resolveInstallPlan(options: InstallStartOptions) {
   const includeNode = options.includeNode ?? false;
-  const installGit = options.installGit ?? false;
   const installClaude = options.installClaude ?? true;
   const installCodex = options.installCodex ?? true;
   const initializeClaude = options.initializeClaude ?? installClaude;
@@ -187,13 +183,12 @@ function resolveInstallPlan(options: InstallStartOptions) {
   if (installClaude || initializeClaude) runtimes.push("claude");
   if (installCodex || initializeCodex) runtimes.push("codex");
 
-  if (!installGit && runtimes.length === 0) {
+  if (runtimes.length === 0) {
     throw new Error("No tool selected for installation");
   }
 
   return {
     includeNode,
-    installGit,
     installClaude,
     installCodex,
     initializeClaude,
@@ -209,7 +204,6 @@ async function runInstallSequence(options: InstallStartOptions, signal: AbortSig
     const steps = [
       ...(plan.includeNode ? [{ id: "install-node", label: "Installing Node.js" }] : []),
       { id: "check-node", label: "Checking Node.js" },
-      ...(plan.installGit ? [{ id: "install-git", label: "Installing Git" }] : []),
       ...(plan.installClaude ? [{ id: "install-claude", label: "Installing Claude Code" }] : []),
       ...(plan.installCodex ? [{ id: "install-codex", label: "Installing Codex CLI" }] : []),
       ...(plan.initializeClaude ? [{ id: "init-claude", label: "Initializing Claude environment" }] : []),
@@ -274,17 +268,6 @@ async function runInstallSequence(options: InstallStartOptions, signal: AbortSig
       }
       addLog("Dry-run: Node.js found: v20.0.0");
       setStep("check-node", "success");
-
-      if (plan.installGit) {
-        setStep("install-git", "running");
-        addLog("Dry-run: brew install git / winget install Git.Git (skipped)");
-        await waitForDuration(220, signal);
-        if (signal.aborted) {
-          markCancelled();
-          return;
-        }
-        setStep("install-git", "success");
-      }
 
       for (const runtime of plan.runtimes) {
         if (runtime === "claude" && plan.installClaude) {
@@ -409,58 +392,6 @@ async function runInstallSequence(options: InstallStartOptions, signal: AbortSig
 
     const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 
-    if (plan.installGit) {
-      setStep("install-git", "running");
-      const alreadyInstalled = await commandExists(GIT_BINARY);
-
-      if (alreadyInstalled) {
-        addLog("Git is already installed, skipping install.");
-        setStep("install-git", "success");
-      } else {
-        addLog(`Installing ${GIT_LABEL} via package manager...`);
-        try {
-          if (process.platform === "darwin") {
-            const brew = existsSync("/opt/homebrew/bin/brew") ? "/opt/homebrew/bin/brew" : "/usr/local/bin/brew";
-            if (!existsSync(brew)) {
-              throw new Error("Homebrew is required but not found");
-            }
-            await runCommand([brew, "install", "git"], signal, addLog);
-          } else if (process.platform === "win32") {
-            await runCommand(
-              [
-                "winget",
-                "install",
-                "-e",
-                "--id",
-                "Git.Git",
-                "--accept-source-agreements",
-                "--accept-package-agreements",
-              ],
-              signal,
-              addLog,
-            );
-          } else {
-            throw new Error("Automatic Git installation is only supported on macOS/Windows");
-          }
-          setStep("install-git", "success");
-        } catch (error) {
-          if (signal.aborted || isAbortError(error)) {
-            markCancelled();
-            return;
-          }
-          setStep("install-git", "failed", String(error));
-          installState.status = "failed";
-          emitProgress();
-          return;
-        }
-      }
-
-      if (signal.aborted) {
-        markCancelled();
-        return;
-      }
-    }
-
     for (const runtime of plan.runtimes) {
       const installEnabled = runtime === "claude" ? plan.installClaude : plan.installCodex;
       const stepId = `install-${runtime}`;
@@ -541,16 +472,6 @@ async function runInstallSequence(options: InstallStartOptions, signal: AbortSig
     }
 
     setStep("verify", "running");
-    if (plan.installGit) {
-      const gitVersion = await captureVersion(GIT_BINARY);
-      if (!gitVersion) {
-        setStep("verify", "failed", `${GIT_LABEL} was installed but could not be verified`);
-        installState.status = "failed";
-        emitProgress();
-        return;
-      }
-      addLog(`${GIT_LABEL} installed: ${gitVersion}`);
-    }
     for (const runtime of plan.runtimes) {
       const version = await captureVersion(RUNTIME_BINARY[runtime]);
       if (!version) {
@@ -578,13 +499,11 @@ export function registerInstallHandlers() {
   handlersRegistered = true;
 
   ipcMain.handle("install:check-prerequisites", async (): Promise<InstallPrerequisites> => {
-    const [hasNode, hasGit, hasClaude, hasCodex, nodeVersion, gitVersion, claudeVersion, codexVersion] = await Promise.all([
+    const [hasNode, hasClaude, hasCodex, nodeVersion, claudeVersion, codexVersion] = await Promise.all([
       commandExists("node"),
-      commandExists(GIT_BINARY),
       commandExists("claude"),
       commandExists("codex"),
       captureVersion("node"),
-      captureVersion(GIT_BINARY),
       captureVersion("claude"),
       captureVersion("codex"),
     ]);
@@ -594,8 +513,6 @@ export function registerInstallHandlers() {
     return {
       hasNode,
       nodeVersion,
-      hasGit,
-      gitVersion,
       hasClaude,
       claudeVersion,
       hasCodex,
@@ -615,7 +532,6 @@ export function registerInstallHandlers() {
     installAbortController = new AbortController();
     const startOptions: InstallStartOptions = {
       includeNode: options?.includeNode ?? false,
-      installGit: options?.installGit ?? false,
       installClaude: options?.installClaude ?? true,
       installCodex: options?.installCodex ?? true,
       initializeClaude: options?.initializeClaude,

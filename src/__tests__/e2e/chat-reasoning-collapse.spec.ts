@@ -13,7 +13,6 @@ function buildSession() {
     system_prompt: '',
     working_directory: '/tmp/monolith-e2e-workspace',
     sdk_session_id: '',
-    worktree_id: '',
     project_name: 'Monolith',
     status: 'active',
     mode: 'code',

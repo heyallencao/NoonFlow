@@ -17,13 +17,18 @@ import path from 'path';
 import os from 'os';
 import type { MessageContentBlock } from '@/types';
 import { summarizeSessionPreview, type SessionPreviewTag } from '@/lib/session-preview';
+import { iterateJsonlLines } from '@/lib/jsonl-reader';
 
 // ==========================================
 // Constants
 // ==========================================
 
-/** Maximum file size (50 MB) to prevent memory issues with very large sessions */
-const MAX_FILE_SIZE = 50 * 1024 * 1024;
+const SESSION_LIST_SAMPLE_BYTES = 128 * 1024;
+const sessionInfoCache = new Map<string, {
+  size: number;
+  mtimeMs: number;
+  info: ClaudeSessionInfo | null;
+}>();
 
 // ==========================================
 // Types for Claude Code JSONL entries
@@ -57,6 +62,16 @@ export interface ClaudeSessionInfo {
   updatedAt: string;
   /** File size in bytes */
   fileSize: number;
+}
+
+export interface ClaudeSessionListOptions {
+  projectPaths?: readonly string[];
+  limit?: number;
+}
+
+export interface ClaudeSessionPage {
+  sessions: ClaudeSessionInfo[];
+  total: number;
 }
 
 export interface ParsedMessage {
@@ -165,13 +180,34 @@ export function decodeProjectPath(encodedName: string): string {
  * List all available Claude Code CLI sessions.
  * Scans ~/.claude/projects/ for .jsonl files and extracts metadata.
  */
-export function listClaudeSessions(): ClaudeSessionInfo[] {
+function normalizeProjectPath(projectPath: string): string {
+  return projectPath.replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function encodeClaudeProjectPath(projectPath: string): string {
+  return normalizeProjectPath(projectPath).replace(/\//g, '-');
+}
+
+export function listClaudeSessionPage(options: ClaudeSessionListOptions = {}): ClaudeSessionPage {
   const projectsDir = getClaudeProjectsDir();
 
   if (!fs.existsSync(projectsDir)) {
-    return [];
+    return { sessions: [], total: 0 };
   }
 
+  const allowedProjectPaths = new Set(
+    (options.projectPaths || []).map(normalizeProjectPath).filter(Boolean),
+  );
+  const allowedProjectDirectories = new Set(
+    Array.from(allowedProjectPaths, encodeClaudeProjectPath),
+  );
+  const hasProjectFilter = allowedProjectPaths.size > 0;
+  const candidates: Array<{
+    filePath: string;
+    sessionId: string;
+    projectPath: string;
+    mtimeMs: number;
+  }> = [];
   const sessions: ClaudeSessionInfo[] = [];
 
   try {
@@ -179,6 +215,7 @@ export function listClaudeSessions(): ClaudeSessionInfo[] {
 
     for (const projectDir of projectDirs) {
       if (!projectDir.isDirectory()) continue;
+      if (hasProjectFilter && !allowedProjectDirectories.has(projectDir.name)) continue;
 
       const projectPath = path.join(projectsDir, projectDir.name);
       const decodedPath = decodeProjectPath(projectDir.name);
@@ -190,14 +227,15 @@ export function listClaudeSessions(): ClaudeSessionInfo[] {
         for (const jsonlFile of jsonlFiles) {
           const filePath = path.join(projectPath, jsonlFile);
           const sessionId = jsonlFile.replace('.jsonl', '');
-
           try {
-            const info = extractSessionInfo(filePath, sessionId, decodedPath);
-            if (info) {
-              sessions.push(info);
-            }
+            candidates.push({
+              filePath,
+              sessionId,
+              projectPath: decodedPath,
+              mtimeMs: fs.statSync(filePath).mtimeMs,
+            });
           } catch {
-            // Skip files that can't be parsed
+            // Skip files that can't be inspected.
           }
         }
       } catch {
@@ -208,25 +246,55 @@ export function listClaudeSessions(): ClaudeSessionInfo[] {
     // Projects directory can't be read
   }
 
+  candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  const normalizedLimit = typeof options.limit === 'number' && Number.isFinite(options.limit)
+    ? Math.max(0, Math.trunc(options.limit))
+    : candidates.length;
+
+  for (const candidate of candidates) {
+    if (sessions.length >= normalizedLimit) break;
+    try {
+      const info = extractSessionInfo(candidate.filePath, candidate.sessionId, candidate.projectPath);
+      if (!info) continue;
+      if (hasProjectFilter && !allowedProjectPaths.has(normalizeProjectPath(info.cwd || info.projectPath))) {
+        continue;
+      }
+      sessions.push(info);
+    } catch {
+      // Skip files that can't be parsed.
+    }
+  }
+
   // Sort by most recent first
   sessions.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 
-  return sessions;
+  return { sessions, total: candidates.length };
 }
 
-/**
- * Read and split a JSONL file into lines, with size guard.
- * Returns null if the file exceeds MAX_FILE_SIZE.
- */
-function readJsonlLines(filePath: string): { lines: string[]; stat: fs.Stats } | null {
-  const stat = fs.statSync(filePath);
-  if (stat.size > MAX_FILE_SIZE) {
-    console.warn(`[claude-session-parser] Skipping ${filePath}: file too large (${(stat.size / 1024 / 1024).toFixed(1)} MB)`);
-    return null;
+export function listClaudeSessions(options: ClaudeSessionListOptions = {}): ClaudeSessionInfo[] {
+  return listClaudeSessionPage(options).sessions;
+}
+
+function readJsonlSampleLines(filePath: string, stat: fs.Stats): string[] {
+  if (stat.size <= SESSION_LIST_SAMPLE_BYTES * 2) {
+    return fs.readFileSync(filePath, 'utf-8').split('\n').filter((line) => line.trim());
   }
-  const content = fs.readFileSync(filePath, 'utf-8');
-  const lines = content.split('\n').filter(l => l.trim());
-  return { lines, stat };
+
+  const descriptor = fs.openSync(filePath, 'r');
+  try {
+    const head = Buffer.allocUnsafe(SESSION_LIST_SAMPLE_BYTES);
+    const tail = Buffer.allocUnsafe(SESSION_LIST_SAMPLE_BYTES);
+    const headBytes = fs.readSync(descriptor, head, 0, head.length, 0);
+    const tailStart = Math.max(0, stat.size - tail.length);
+    const tailBytes = fs.readSync(descriptor, tail, 0, tail.length, tailStart);
+    const headLines = head.subarray(0, headBytes).toString('utf-8').split('\n');
+    headLines.pop();
+    const tailLines = tail.subarray(0, tailBytes).toString('utf-8').split('\n');
+    if (tailStart > 0) tailLines.shift();
+    return [...headLines, ...tailLines].filter((line) => line.trim());
+  } finally {
+    fs.closeSync(descriptor);
+  }
 }
 
 /**
@@ -237,9 +305,12 @@ function extractSessionInfo(
   sessionId: string,
   projectPath: string,
 ): ClaudeSessionInfo | null {
-  const result = readJsonlLines(filePath);
-  if (!result) return null;
-  const { lines, stat } = result;
+  const stat = fs.statSync(filePath);
+  const cached = sessionInfoCache.get(filePath);
+  if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+    return cached.info;
+  }
+  const lines = readJsonlSampleLines(filePath, stat);
 
   if (lines.length === 0) return null;
 
@@ -303,7 +374,7 @@ function extractSessionInfo(
   // Use cwd from JSONL (authoritative) for projectName; fall back to decoded folder name
   const effectivePath = cwd || projectPath;
 
-  return {
+  const info: ClaudeSessionInfo = {
     sessionId,
     projectPath: effectivePath,
     projectName: path.basename(effectivePath),
@@ -311,7 +382,7 @@ function extractSessionInfo(
     gitBranch: gitBranch || '',
     version: version || '',
     model: model || 'claude-3-5-sonnet-20241022', // fallback default
-    preview: summarizeSessionPreview(previewSource).preview,
+    preview: summarizeSessionPreview(previewSource).preview.slice(0, 120),
     previewTags,
     userMessageCount,
     assistantMessageCount,
@@ -319,6 +390,8 @@ function extractSessionInfo(
     updatedAt: updatedAt || stat.mtime.toISOString(),
     fileSize: stat.size,
   };
+  sessionInfoCache.set(filePath, { size: stat.size, mtimeMs: stat.mtimeMs, info });
+  return info;
 }
 
 // ==========================================
@@ -357,11 +430,7 @@ export function parseClaudeSession(sessionId: string): ParsedSession | null {
 
   if (!filePath) return null;
 
-  const result = readJsonlLines(filePath);
-  if (!result) return null;
-  const { lines, stat } = result;
-
-  if (lines.length === 0) return null;
+  const stat = fs.statSync(filePath);
 
   // Single pass: extract both metadata and messages
   const messages: ParsedMessage[] = [];
@@ -376,7 +445,7 @@ export function parseClaudeSession(sessionId: string): ParsedSession | null {
   let userMessageCount = 0;
   let assistantMessageCount = 0;
 
-  for (const line of lines) {
+  for (const line of iterateJsonlLines(filePath)) {
     try {
       const entry = JSON.parse(line) as JournalEntry;
 
@@ -439,7 +508,7 @@ export function parseClaudeSession(sessionId: string): ParsedSession | null {
     gitBranch: gitBranch || '',
     version: version || '',
     model: model || 'claude-3-5-sonnet-20241022',
-    preview: summarizeSessionPreview(previewSource).preview,
+    preview: summarizeSessionPreview(previewSource).preview.slice(0, 120),
     previewTags,
     userMessageCount,
     assistantMessageCount,

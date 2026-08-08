@@ -1,11 +1,5 @@
 import type { AssistantRuntime } from '@/types';
 import type { Message } from '@/types';
-import {
-  getLocalStorageSafe,
-  getSessionStorageSafe,
-  readCompatibleStorageValue,
-  writeStorageValue,
-} from '@/lib/browser-storage';
 
 export interface SessionMetaCacheEntry {
   sessionId: string;
@@ -31,132 +25,126 @@ export interface ChatSessionViewCacheEntry {
   updatedAt: number;
 }
 
-const SESSION_META_STORAGE_KEY = 'noonflow:session-meta-cache';
-const LEGACY_SESSION_META_STORAGE_KEYS = ['monolith:session-meta-cache'] as const;
-const CHAT_VIEW_STORAGE_KEY = 'noonflow:chat-view-cache';
-const LEGACY_CHAT_VIEW_STORAGE_KEYS = ['monolith:chat-view-cache'] as const;
+const OBSOLETE_CONVERSATION_STORAGE_KEYS = [
+  'noonflow:session-meta-cache',
+  'monolith:session-meta-cache',
+  'noonflow:chat-view-cache',
+  'monolith:chat-view-cache',
+  'noonflow:split-sessions',
+  'monolith:split-sessions',
+  'noonflow:split-active-column',
+  'monolith:split-active-column',
+  'noonflow-session-store',
+  'monolith-session-store',
+  'noonflow:permission-memory',
+  'monolith:permission-memory',
+  'noonflow:workspace-folders',
+  'monolith:workspace-folders',
+  'revertedAssistantMessages',
+  'imgref:last_generated',
+] as const;
+const OBSOLETE_CONVERSATION_STORAGE_PREFIXES = [
+  'noonflow:open-tabs:',
+  'monolith:open-tabs:',
+  'noonflow:tabs-scroll:',
+  'monolith:tabs-scroll:',
+  'noonflow:terminal-panel:',
+  'monolith:terminal-panel:',
+  'noonflow:replay-return-to:',
+  'imggen:',
+] as const;
+const SESSION_META_CACHE_KEY = '__noonflowSessionMetaCache__' as const;
 const CHAT_VIEW_CACHE_KEY = '__noonflowChatSessionViewCache__' as const;
+const STORAGE_PURGED_KEY = '__noonflowConversationStoragePurged__' as const;
 
-function readSessionMetaCache(): Record<string, SessionMetaCacheEntry> {
-  if (typeof window === 'undefined') {
-    return {};
-  }
+export function purgeObsoleteConversationStorage(): void {
+  if (typeof window === 'undefined') return;
+  const globalObject = globalThis as Record<string, unknown>;
+  if (globalObject[STORAGE_PURGED_KEY]) return;
+  globalObject[STORAGE_PURGED_KEY] = true;
 
-  try {
-    const raw = readCompatibleStorageValue(
-      getLocalStorageSafe(),
-      SESSION_META_STORAGE_KEY,
-      LEGACY_SESSION_META_STORAGE_KEYS,
-    );
-    if (!raw) {
-      return {};
+  for (const storage of [window.localStorage, window.sessionStorage]) {
+    try {
+      for (const key of OBSOLETE_CONVERSATION_STORAGE_KEYS) {
+        storage.removeItem(key);
+      }
+      const prefixedKeys: string[] = [];
+      for (let index = 0; index < storage.length; index += 1) {
+        const key = storage.key(index);
+        if (key && OBSOLETE_CONVERSATION_STORAGE_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+          prefixedKeys.push(key);
+        }
+      }
+      for (const key of prefixedKeys) storage.removeItem(key);
+    } catch {
+      // Best effort for browsers that deny storage access.
     }
-
-    const parsed = JSON.parse(raw) as Record<string, SessionMetaCacheEntry>;
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
   }
 }
 
-function writeSessionMetaCache(cache: Record<string, SessionMetaCacheEntry>): Record<string, SessionMetaCacheEntry> {
-  if (typeof window !== 'undefined') {
-    writeStorageValue(getLocalStorageSafe(), SESSION_META_STORAGE_KEY, JSON.stringify(cache));
+function getSessionMetaCacheMap(): Map<string, SessionMetaCacheEntry> {
+  purgeObsoleteConversationStorage();
+  const globalObject = globalThis as Record<string, unknown>;
+  if (!globalObject[SESSION_META_CACHE_KEY]) {
+    globalObject[SESSION_META_CACHE_KEY] = new Map<string, SessionMetaCacheEntry>();
   }
-  return cache;
+  return globalObject[SESSION_META_CACHE_KEY] as Map<string, SessionMetaCacheEntry>;
 }
 
 export function getSessionMetaCacheSnapshot(): Record<string, SessionMetaCacheEntry> {
-  return readSessionMetaCache();
+  return Object.fromEntries(getSessionMetaCacheMap().entries());
 }
 
 export function getSessionMetaCacheEntry(sessionId: string): SessionMetaCacheEntry | null {
   if (!sessionId) {
     return null;
   }
-  return readSessionMetaCache()[sessionId] ?? null;
+  return getSessionMetaCacheMap().get(sessionId) ?? null;
 }
 
 export function upsertSessionMetaCacheEntry(entry: Omit<SessionMetaCacheEntry, 'updatedAt'>): Record<string, SessionMetaCacheEntry> {
   if (!entry.sessionId) {
-    return readSessionMetaCache();
+    return getSessionMetaCacheSnapshot();
   }
 
-  const next = readSessionMetaCache();
-  next[entry.sessionId] = {
-    ...next[entry.sessionId],
+  const cache = getSessionMetaCacheMap();
+  cache.set(entry.sessionId, {
+    ...cache.get(entry.sessionId),
     ...entry,
     updatedAt: Date.now(),
-  };
-  return writeSessionMetaCache(next);
+  });
+  return getSessionMetaCacheSnapshot();
 }
 
 export function upsertSessionMetaCacheEntries(
   entries: Array<Omit<SessionMetaCacheEntry, 'updatedAt'>>,
 ): Record<string, SessionMetaCacheEntry> {
-  const next = readSessionMetaCache();
+  const cache = getSessionMetaCacheMap();
   for (const entry of entries) {
     if (!entry.sessionId) {
       continue;
     }
-    next[entry.sessionId] = {
-      ...next[entry.sessionId],
+    cache.set(entry.sessionId, {
+      ...cache.get(entry.sessionId),
       ...entry,
       updatedAt: Date.now(),
-    };
+    });
   }
-  return writeSessionMetaCache(next);
+  return getSessionMetaCacheSnapshot();
 }
 
 export function removeSessionMetaCacheEntry(sessionId: string): Record<string, SessionMetaCacheEntry> {
-  const next = readSessionMetaCache();
-  delete next[sessionId];
-  return writeSessionMetaCache(next);
+  getSessionMetaCacheMap().delete(sessionId);
+  return getSessionMetaCacheSnapshot();
 }
 
 function getChatViewCacheMap(): Map<string, ChatSessionViewCacheEntry> {
   const globalObject = globalThis as Record<string, unknown>;
   if (!globalObject[CHAT_VIEW_CACHE_KEY]) {
-    globalObject[CHAT_VIEW_CACHE_KEY] = new Map<string, ChatSessionViewCacheEntry>(
-      Object.entries(readChatViewCache()),
-    );
+    purgeObsoleteConversationStorage();
+    globalObject[CHAT_VIEW_CACHE_KEY] = new Map<string, ChatSessionViewCacheEntry>();
   }
   return globalObject[CHAT_VIEW_CACHE_KEY] as Map<string, ChatSessionViewCacheEntry>;
-}
-
-function readChatViewCache(): Record<string, ChatSessionViewCacheEntry> {
-  if (typeof window === 'undefined') {
-    return {};
-  }
-
-  try {
-    const raw = readCompatibleStorageValue(
-      getSessionStorageSafe(),
-      CHAT_VIEW_STORAGE_KEY,
-      LEGACY_CHAT_VIEW_STORAGE_KEYS,
-    );
-    if (!raw) {
-      return {};
-    }
-
-    const parsed = JSON.parse(raw) as Record<string, ChatSessionViewCacheEntry>;
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function persistChatViewCache(map: Map<string, ChatSessionViewCacheEntry>): void {
-  if (typeof window === 'undefined') {
-    return;
-  }
-
-  try {
-    const record = Object.fromEntries(map.entries());
-    writeStorageValue(getSessionStorageSafe(), CHAT_VIEW_STORAGE_KEY, JSON.stringify(record));
-  } catch {
-    // best effort
-  }
 }
 
 export function getCachedChatSessionView(sessionId: string): ChatSessionViewCacheEntry | null {
@@ -176,7 +164,6 @@ export function setCachedChatSessionView(
   };
   const map = getChatViewCacheMap();
   map.set(entry.sessionId, nextEntry);
-  persistChatViewCache(map);
   return nextEntry;
 }
 
@@ -204,7 +191,5 @@ export function isResolvedChatSessionCache(
 }
 
 export function clearCachedChatSessionView(sessionId: string): void {
-  const map = getChatViewCacheMap();
-  map.delete(sessionId);
-  persistChatViewCache(map);
+  getChatViewCacheMap().delete(sessionId);
 }

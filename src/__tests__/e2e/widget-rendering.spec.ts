@@ -15,7 +15,6 @@ function buildMockSession(sessionId: string, overrides: Record<string, unknown> 
     system_prompt: '',
     working_directory: '/tmp/monolith-e2e-widget',
     sdk_session_id: '',
-    worktree_id: '',
     project_name: 'Monolith',
     status: 'active',
     mode: 'code',

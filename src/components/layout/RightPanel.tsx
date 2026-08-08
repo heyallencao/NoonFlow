@@ -54,8 +54,6 @@ export function RightPanel({ width }: RightPanelProps) {
     sessionId,
     previewFile,
     setPreviewFile,
-    previewDiffFile,
-    setPreviewDiffFile,
   } = usePanel();
   const { t } = useTranslation();
   const [activeInspector, setActiveInspector] = useState<InspectorPanel>(null);
@@ -91,7 +89,6 @@ export function RightPanel({ width }: RightPanelProps) {
   }, []);
 
   const handleFileSelect = useCallback((path: string) => {
-    setPreviewDiffFile(null);
     const ext = path.split('.').pop()?.toLowerCase() || '';
     const nonPreviewable = new Set([
       'png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp', 'svg', 'avif',
@@ -109,13 +106,7 @@ export function RightPanel({ width }: RightPanelProps) {
     } else {
       setPreviewFile(path);
     }
-  }, [previewFile, setPreviewDiffFile, setPreviewFile]);
-
-  const handleDiffFileSelect = useCallback((path: string) => {
-    setPanelOpen(true);
-    setPreviewFile(path);
-    setPreviewDiffFile(path);
-  }, [setPanelOpen, setPreviewDiffFile, setPreviewFile]);
+  }, [previewFile, setPreviewFile]);
 
   const toggleInspector = useCallback((panel: Exclude<InspectorPanel, null>) => {
     setActiveInspector((current) => current === panel ? null : panel);
@@ -305,11 +296,9 @@ export function RightPanel({ width }: RightPanelProps) {
         {/* File Tree - Full height */}
         <div className="flex-1 min-h-0 overflow-hidden">
           <FileTree
-            key={workingDirectory || '__empty-worktree__'}
+            key={workingDirectory || '__empty-workspace__'}
             workingDirectory={workingDirectory}
             onFileSelect={handleFileSelect}
-            onDiffFileSelect={handleDiffFileSelect}
-            selectedDiffFilePath={previewDiffFile}
             onFileAdd={handleFileAdd}
           />
         </div>

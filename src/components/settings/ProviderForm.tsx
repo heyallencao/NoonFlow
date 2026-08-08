@@ -176,7 +176,7 @@ export function ProviderForm({
       setShowAdvanced(false);
     }
     setExtraEnvVersion((current) => current + 1);
-  }, [open, mode, provider, initialPreset]);
+  }, [open, mode, provider, initialPreset, parseModelsFromEnv]);
 
   const handleTypeChange = (type: string) => {
     setProviderType(type);

@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import fs from 'fs/promises';
-import { createSession, getSessionsByCursor } from '@/lib/db';
+import { createSession, getAllSessions } from '@/lib/db';
+import { listNativeSessions } from '@/lib/native-session-catalog';
 import {
   getAssistantRuntimeStatus,
   getDefaultAssistantRuntime,
@@ -28,18 +29,30 @@ function parseCursorParam(rawCursor: string | null): number | undefined {
 export async function GET(request: NextRequest) {
   try {
     const type = request.nextUrl.searchParams.get('type');
-    const cursor = parseCursorParam(request.nextUrl.searchParams.get('cursor'));
-    const workspace = request.nextUrl.searchParams.get('workspace');
+    parseCursorParam(request.nextUrl.searchParams.get('cursor'));
+    const workspaces = request.nextUrl.searchParams.getAll('workspace').filter(Boolean);
+    const openedOnly = request.nextUrl.searchParams.get('openedOnly') === '1';
     const sessionType: SessionListType = type === 'terminal' || type === 'all' ? type : 'chat';
-    const { sessions, deletedSessionIds, nextCursor } = getSessionsByCursor(
-      sessionType,
-      cursor,
-      workspace || undefined
+    const nativeSessions = openedOnly && workspaces.length === 0
+      ? []
+      : listNativeSessions(sessionType, workspaces.length > 0 ? workspaces : undefined);
+    const workspaceSet = new Set(workspaces);
+    const transientSessions = getAllSessions(sessionType).filter(
+      (session) => !openedOnly || workspaceSet.has(session.working_directory || ''),
     );
+    const transientIds = new Set(transientSessions.map((session) => session.id));
+    const claimedNativeIds = new Set(
+      transientSessions.map((session) => session.sdk_session_id).filter(Boolean),
+    );
+    const unclaimedNativeSessions = nativeSessions.filter(
+      (session) => !transientIds.has(session.id) && !claimedNativeIds.has(session.id),
+    );
+    const sessions = [...transientSessions, ...unclaimedNativeSessions]
+      .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime());
     const response: SessionsResponse = {
       sessions,
-      deleted_session_ids: deletedSessionIds,
-      next_cursor: nextCursor,
+      deleted_session_ids: [],
+      next_cursor: 0,
     };
     return Response.json(response);
   } catch (error) {
@@ -137,7 +150,6 @@ export async function POST(request: NextRequest) {
       body.mode,
       finalProviderId,
       sessionType,
-      body.worktree_id,
       resolvedRuntime,
     );
     const response: SessionResponse = { session };

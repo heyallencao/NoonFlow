@@ -1,57 +1,27 @@
-'use client';
-
-import { NewOverviewHeader } from './NewOverviewHeader';
-import { NewOverviewMetrics } from './NewOverviewMetrics';
-import { ActivityChart } from './ActivityChart';
-import { WhenYouWorkChart } from './WhenYouWorkChart';
-import { CostByModelCard } from './CostByModelCard';
-import { NewRecentSessionsCard } from './NewRecentSessionsCard';
-import { AlertsSection } from './AlertsSection';
-import { RecommendationsSection } from './RecommendationsSection';
-import { SmallCardsSection } from './SmallCardsSection';
-import { OverviewFooter } from './OverviewFooter';
+import Link from 'next/link';
 
 export default function OverviewPage() {
   return (
-    <div className="flex h-full min-h-0 min-h-full flex-col overflow-y-auto px-4 pb-4 pt-1 sm:px-6 sm:pb-6 lg:px-8 lg:pb-8">
-      <div className="mx-auto flex min-h-full w-full flex-col gap-3 sm:gap-4">
-        <div className="space-y-3 sm:space-y-4">
-
-          {/* Section 1: Header - Tight coupling with metrics below */}
-          <div className="pt-2 -mb-1">
-            <NewOverviewHeader />
-          </div>
-
-          {/* Section 2: 4-column metric cards */}
-          <NewOverviewMetrics />
-
-          {/* Section 3: Activity + When You Work charts */}
-          <div className="grid grid-cols-1 gap-2.5 sm:gap-3 lg:grid-cols-2">
-            <ActivityChart />
-            <WhenYouWorkChart />
-          </div>
-
-          {/* Section 4: Cost by Model + Recent Sessions */}
-          <div className="grid grid-cols-1 gap-2.5 sm:gap-3 lg:grid-cols-2">
-            <CostByModelCard />
-            <NewRecentSessionsCard />
-          </div>
-
-          {/* Section 5: Alerts */}
-          <AlertsSection />
-
-          {/* Section 6: Recommendations */}
-          <RecommendationsSection />
-
-          {/* Section 7: Skills / Hooks / Agents / Memory small cards */}
-          <SmallCardsSection />
+    <main className="flex h-full min-h-0 items-center justify-center overflow-y-auto p-6">
+      <section className="w-full max-w-xl rounded-2xl border border-border-subtle bg-bg-secondary p-8 shadow-sm">
+        <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+          NoonFlow
+        </p>
+        <h1 className="mt-3 text-2xl font-semibold tracking-tight text-foreground">
+          Claude Code 与 Codex，本地直接使用
+        </h1>
+        <p className="mt-3 text-sm leading-6 text-muted-foreground">
+          从左侧选择一个项目并开始对话。会话历史由 Claude Code 或 Codex 原生保存，NoonFlow 不再创建自己的会话副本。
+        </p>
+        <div className="mt-6 flex items-center gap-3">
+          <Link
+            href="/settings"
+            className="rounded-lg border border-border-default px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+          >
+            检查运行环境
+          </Link>
         </div>
-
-        {/* Section 9: Footer */}
-        <div className="mt-auto">
-          <OverviewFooter />
-        </div>
-      </div>
-    </div>
+      </section>
+    </main>
   );
 }
