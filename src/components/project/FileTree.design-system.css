@@ -1,0 +1,99 @@
+/**
+ * FileTree Redesign - Design System
+ *
+ * Typography Scale:
+ * - UI labels: text-xs (12px)
+ * - File names: text-xs (12px)
+ * - Hints: text-[11px] (11px)
+ *
+ * Icon Scale:
+ * - Standard: h-4 w-4 (16px)
+ * - Small: h-3.5 w-3.5 (14px)
+ *
+ * Touch Targets:
+ * - Buttons: h-8 w-8 (32px)
+ * - Input: h-8 (32px)
+ * - Tree items: min-h-7 (28px)
+ *
+ * Spacing Rhythm:
+ * - Tight: gap-1.5 (6px)
+ * - Normal: gap-2 (8px)
+ * - Comfortable: gap-3 (12px)
+ * - Loose: gap-4 (16px)
+ *
+ * Border Radius:
+ * - Small: rounded-lg (8px)
+ * - Medium: rounded-xl (12px)
+ *
+ * Colors:
+ * - Primary text: text-sidebar-foreground
+ * - Secondary text: text-sidebar-foreground/70
+ * - Tertiary text: text-sidebar-foreground/50
+ * - Muted: text-muted-foreground
+ */
+
+/* Unified FileTree Toolbar Styles */
+.file-tree-toolbar {
+  @apply flex shrink-0 items-center gap-2 px-4 py-3;
+}
+
+.file-tree-search-wrapper {
+  @apply relative min-w-0 flex-1;
+}
+
+.file-tree-search-icon {
+  @apply pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-sidebar-foreground/50;
+}
+
+.file-tree-search-input {
+  @apply h-8 w-full rounded-lg border border-border-subtle bg-bg-tertiary pl-9 pr-3 text-xs text-sidebar-foreground placeholder:text-sidebar-foreground/40 transition-colors focus:border-border-default focus:bg-bg-secondary focus:outline-none focus:ring-1 focus:ring-ring/20;
+}
+
+.file-tree-action-button {
+  @apply inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border-subtle bg-bg-tertiary text-sidebar-foreground/70 transition-all duration-200 hover:border-border-default hover:bg-bg-hover hover:text-sidebar-foreground disabled:pointer-events-none disabled:opacity-40;
+}
+
+.file-tree-action-icon {
+  @apply h-4 w-4;
+}
+
+/* Unified Context Menu Styles */
+.file-tree-context-menu {
+  @apply min-w-48 rounded-xl border border-border-default bg-bg-secondary p-1.5 shadow-xl;
+}
+
+.file-tree-context-item {
+  @apply flex w-full items-center rounded-lg px-3 py-2 text-left text-xs font-medium text-sidebar-foreground transition-colors hover:bg-bg-hover disabled:pointer-events-none disabled:opacity-40;
+}
+
+.file-tree-context-item-destructive {
+  @apply flex w-full items-center rounded-lg px-3 py-2 text-left text-xs font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:pointer-events-none disabled:opacity-40;
+}
+
+.file-tree-context-divider {
+  @apply my-1.5 h-px bg-border-subtle;
+}
+
+/* Unified Tree Container Styles */
+.file-tree-container {
+  @apply mx-4 mb-4 rounded-xl border border-border-subtle bg-bg-tertiary text-sidebar-foreground;
+}
+
+/* Error Message */
+.file-tree-error {
+  @apply px-4 pb-2 text-xs text-destructive;
+}
+
+/* Empty State */
+.file-tree-empty {
+  @apply py-8 text-center text-xs text-sidebar-foreground/50;
+}
+
+/* Loading State */
+.file-tree-loading {
+  @apply flex items-center justify-center py-8;
+}
+
+.file-tree-loading-icon {
+  @apply h-4 w-4 animate-spin text-sidebar-foreground/50;
+}

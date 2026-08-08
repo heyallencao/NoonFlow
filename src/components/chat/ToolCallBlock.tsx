@@ -1,0 +1,407 @@
+'use client';
+
+import { useState } from 'react';
+import { HugeiconsIcon } from "@hugeicons/react";
+import type { IconSvgElement } from "@hugeicons/react";
+import {
+  File01Icon,
+  FileEditIcon,
+  CommandLineIcon,
+  Search01Icon,
+  Wrench01Icon,
+  ArrowDown01Icon,
+  ArrowRight01Icon,
+  Loading02Icon,
+  CheckmarkCircle02Icon,
+  CancelCircleIcon,
+} from "@hugeicons/core-free-icons";
+import { cn } from '@/lib/utils';
+import { CodeBlock } from './CodeBlock';
+import { publishOpenFilePreview } from '@/lib/events/app-event-bus';
+
+type ToolStatus = 'running' | 'success' | 'error';
+
+interface ToolCallBlockProps {
+  name: string;
+  input: unknown;
+  result?: string;
+  isError?: boolean;
+  status?: ToolStatus;
+  duration?: number;
+}
+
+// Classify tools by name
+function getToolCategory(name: string): 'read' | 'write' | 'bash' | 'search' | 'other' {
+  const lower = name.toLowerCase();
+  if (lower === 'read' || lower === 'readfile' || lower === 'read_file') return 'read';
+  if (lower === 'write' || lower === 'edit' || lower === 'writefile' || lower === 'write_file'
+    || lower === 'create_file' || lower === 'createfile'
+    || lower === 'notebookedit' || lower === 'notebook_edit') return 'write';
+  if (lower === 'bash' || lower === 'execute' || lower === 'run' || lower === 'shell'
+    || lower === 'execute_command' || lower === 'exec_command') return 'bash';
+  if (lower === 'search' || lower === 'glob' || lower === 'grep'
+    || lower === 'find_files' || lower === 'search_files'
+    || lower === 'websearch' || lower === 'web_search') return 'search';
+  return 'other';
+}
+
+function getToolIcon(category: ReturnType<typeof getToolCategory>): IconSvgElement {
+  switch (category) {
+    case 'read': return File01Icon;
+    case 'write': return FileEditIcon;
+    case 'bash': return CommandLineIcon;
+    case 'search': return Search01Icon;
+    case 'other': return Wrench01Icon;
+  }
+}
+
+function getToolSummary(name: string, input: unknown, category: ReturnType<typeof getToolCategory>): string {
+  const inp = input as Record<string, unknown> | undefined;
+  const normalizedName = name.trim().toLowerCase();
+
+  if (normalizedName === 'apply_patch' || normalizedName === 'applypatch') {
+    const patchFiles = extractPatchFilePaths(input);
+    if (patchFiles.length > 0) {
+      const first = extractFilename(patchFiles[0]);
+      return patchFiles.length === 1 ? first : `${first} +${patchFiles.length - 1}`;
+    }
+  }
+
+  if (!inp) return name;
+
+  switch (category) {
+    case 'read': {
+      const path = (inp.file_path || inp.path || inp.filePath || '') as string;
+      return path ? extractFilename(path) : name;
+    }
+    case 'write': {
+      const path = (inp.file_path || inp.path || inp.filePath || '') as string;
+      return path ? extractFilename(path) : name;
+    }
+    case 'bash': {
+      const cmd = (inp.command || inp.cmd || '') as string;
+      if (cmd) {
+        const truncated = cmd.length > 80 ? cmd.slice(0, 77) + '...' : cmd;
+        return truncated;
+      }
+      return name;
+    }
+    case 'search': {
+      const pattern = (inp.pattern || inp.query || inp.glob || '') as string;
+      return pattern ? `"${pattern}"` : name;
+    }
+    default:
+      return name;
+  }
+}
+
+function getPatchText(input: unknown): string {
+  if (typeof input === 'string') return input;
+  if (!input || typeof input !== 'object') return '';
+  const payload = input as Record<string, unknown>;
+  const raw = payload.patch || payload.diff || payload.content || '';
+  return typeof raw === 'string' ? raw : '';
+}
+
+function extractPatchFilePaths(input: unknown): string[] {
+  const patchText = getPatchText(input);
+  if (!patchText) return [];
+  const matches = patchText.matchAll(/^\*\*\* (?:Update File|Add File|Delete File|Move to):\s+(.+)$/gm);
+  const files = new Set<string>();
+  for (const match of matches) {
+    const filePath = match[1]?.trim();
+    if (filePath) files.add(filePath);
+  }
+  return Array.from(files);
+}
+
+function extractFilename(path: string): string {
+  const parts = path.split('/');
+  return parts[parts.length - 1] || path;
+}
+
+function getFilePath(input: unknown): string {
+  const inp = input as Record<string, unknown> | undefined;
+  if (!inp) return '';
+  return (inp.file_path || inp.path || inp.filePath || '') as string;
+}
+
+function StatusIndicator({ status }: { status: ToolStatus }) {
+  switch (status) {
+    case 'running':
+      return (
+        <span className="relative flex h-3.5 w-3.5 items-center justify-center">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-30" />
+          <HugeiconsIcon icon={Loading02Icon} className="relative h-3.5 w-3.5 animate-spin text-blue-500" />
+        </span>
+      );
+    case 'success':
+      return <HugeiconsIcon icon={CheckmarkCircle02Icon} className="h-3.5 w-3.5 text-green-500" />;
+    case 'error':
+      return <HugeiconsIcon icon={CancelCircleIcon} className="h-3.5 w-3.5 text-red-500" />;
+  }
+}
+
+// Detect simple diff in Write/Edit tools (old_string/new_string)
+function renderDiff(input: unknown): React.ReactNode | null {
+  const inp = input as Record<string, unknown> | undefined;
+  if (!inp) return null;
+
+  const oldStr = (inp.old_string ?? inp.oldString ?? '') as string;
+  const newStr = (inp.new_string ?? inp.newString ?? '') as string;
+
+  if (!oldStr && !newStr) return null;
+
+  const oldLines = oldStr ? oldStr.split('\n') : [];
+  const newLines = newStr ? newStr.split('\n') : [];
+
+  return (
+    <div className="my-2 rounded-md border border-zinc-700/50 overflow-hidden text-xs font-mono">
+      {oldLines.length > 0 && oldLines.map((line, i) => (
+        <div key={`old-${i}`} className="flex bg-red-950/30 text-red-300">
+          <span className="select-none w-8 text-right pr-2 text-red-400/60 shrink-0">-</span>
+          <span className="px-2 whitespace-pre-wrap break-all">{line}</span>
+        </div>
+      ))}
+      {newLines.length > 0 && newLines.map((line, i) => (
+        <div key={`new-${i}`} className="flex bg-green-950/30 text-green-300">
+          <span className="select-none w-8 text-right pr-2 text-green-400/60 shrink-0">+</span>
+          <span className="px-2 whitespace-pre-wrap break-all">{line}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function ToolCallBlock({
+  name,
+  input,
+  result,
+  isError,
+  status = result !== undefined ? (isError ? 'error' : 'success') : 'running',
+  duration,
+}: ToolCallBlockProps) {
+  const [expanded, setExpanded] = useState(false);
+  const category = getToolCategory(name);
+  const toolIconData = getToolIcon(category);
+  const summary = getToolSummary(name, input, category);
+  const filePath = getFilePath(input);
+  const openFilePreview = () => {
+    if (!filePath) return;
+    publishOpenFilePreview({ path: filePath });
+  };
+
+  const renderContent = () => {
+    switch (category) {
+      case 'read': {
+        return (
+          <div className="space-y-2">
+            {filePath && (
+              <button
+                type="button"
+                onClick={openFilePreview}
+                className="text-xs text-muted-foreground font-mono px-1 underline-offset-2 hover:text-foreground hover:underline"
+                title="Open in file preview"
+              >
+                {filePath}
+              </button>
+            )}
+            {result && (
+              <CodeBlock
+                code={result.slice(0, 5000)}
+                language={guessLanguageFromPath(filePath)}
+                showLineNumbers={true}
+              />
+            )}
+            {!result && status === 'running' && (
+              <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+                <HugeiconsIcon icon={Loading02Icon} className="h-3 w-3 animate-spin" />
+                Reading file...
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      case 'write': {
+        const diff = renderDiff(input);
+        const inp = input as Record<string, unknown> | undefined;
+        const content = (inp?.content || inp?.new_source || inp?.new_string || '') as string;
+
+        return (
+          <div className="space-y-2">
+            {filePath && (
+              <button
+                type="button"
+                onClick={openFilePreview}
+                className="text-xs text-muted-foreground font-mono px-1 underline-offset-2 hover:text-foreground hover:underline"
+                title="Open in file preview"
+              >
+                {filePath}
+              </button>
+            )}
+            {diff}
+            {!diff && content && (
+              <CodeBlock
+                code={content.slice(0, 5000)}
+                language={guessLanguageFromPath(filePath)}
+                showLineNumbers={true}
+              />
+            )}
+            {result && (
+              <div className="text-xs text-muted-foreground px-1 mt-1">{result.slice(0, 500)}</div>
+            )}
+          </div>
+        );
+      }
+
+      case 'bash': {
+        const inp = input as Record<string, unknown> | undefined;
+        const command = (inp?.command || inp?.cmd || '') as string;
+        return (
+          <div className="space-y-2">
+            {command && (
+              <div className="rounded-md bg-black p-3 font-mono text-xs text-zinc-100 overflow-x-auto">
+                <span className="text-green-400 select-none">$ </span>
+                <span className="whitespace-pre-wrap break-all">{command}</span>
+              </div>
+            )}
+            {result && (
+              <div className="rounded-md bg-zinc-950 p-3 font-mono text-xs text-zinc-300 max-h-60 overflow-auto whitespace-pre-wrap break-all">
+                {result.slice(0, 5000)}
+              </div>
+            )}
+            {!result && status === 'running' && (
+              <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+                <HugeiconsIcon icon={Loading02Icon} className="h-3 w-3 animate-spin" />
+                Executing...
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      case 'search': {
+        const inp = input as Record<string, unknown> | undefined;
+        const pattern = (inp?.pattern || inp?.query || inp?.glob || '') as string;
+        return (
+          <div className="space-y-2">
+            {pattern && (
+              <div className="text-xs font-mono text-muted-foreground px-1">
+                Pattern: <span className="text-foreground">{pattern}</span>
+              </div>
+            )}
+            {result && (
+              <div className="rounded-md bg-muted/50 p-2 font-mono text-xs max-h-60 overflow-auto">
+                {result.split('\n').slice(0, 50).map((line, i) => (
+                  <div key={i} className="py-0.5 text-muted-foreground hover:text-foreground transition-colors">
+                    {line}
+                  </div>
+                ))}
+                {result.split('\n').length > 50 && (
+                  <div className="pt-1 text-zinc-500">... and {result.split('\n').length - 50} more lines</div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      default: {
+        return (
+          <div className="space-y-2">
+            <div>
+              <div className="text-xs font-medium text-muted-foreground mb-1">Input</div>
+              <pre className="overflow-x-auto whitespace-pre-wrap text-xs font-mono text-muted-foreground bg-muted/50 rounded p-2">
+                {JSON.stringify(input, null, 2)}
+              </pre>
+            </div>
+            {result && (
+              <div>
+                <div className="text-xs font-medium text-muted-foreground mb-1">Output</div>
+                <pre className="overflow-x-auto whitespace-pre-wrap text-xs font-mono text-muted-foreground bg-muted/50 rounded p-2 max-h-60 overflow-auto">
+                  {result.slice(0, 3000)}
+                </pre>
+              </div>
+            )}
+          </div>
+        );
+      }
+    }
+  };
+
+  const statusBorderColor = {
+    running: 'border-blue-500/70',
+    success: 'border-green-500/50',
+    error: 'border-red-500/60',
+  }[status];
+
+  const statusBgColor = {
+    running: 'bg-blue-500/[0.03] dark:bg-blue-500/[0.05]',
+    success: 'bg-transparent',
+    error: 'bg-red-500/[0.03] dark:bg-red-500/[0.05]',
+  }[status];
+
+  return (
+    <div className={cn("my-0.5 border-l-2 rounded-r-md overflow-hidden transition-colors duration-300", statusBorderColor, statusBgColor)}>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className={cn(
+          "flex w-full items-center gap-2 px-3 py-1 text-left text-sm hover:bg-white/[0.03] transition-colors",
+          expanded && "border-b border-border/30"
+        )}
+      >
+        {expanded ? (
+          <HugeiconsIcon icon={ArrowDown01Icon} className="h-3 w-3 shrink-0 text-muted-foreground" />
+        ) : (
+          <HugeiconsIcon icon={ArrowRight01Icon} className="h-3 w-3 shrink-0 text-muted-foreground" />
+        )}
+        <HugeiconsIcon icon={toolIconData} className={cn(
+          "h-3.5 w-3.5 shrink-0",
+          category === 'read' && "text-blue-500",
+          category === 'write' && "text-amber-500",
+          category === 'bash' && "text-green-500",
+          category === 'search' && "text-indigo-500",
+          category === 'other' && "text-zinc-500",
+        )} />
+        <span className="font-mono text-xs truncate flex-1 text-foreground/80">{summary}</span>
+        <div className="flex items-center gap-2 shrink-0 ml-2">
+          {duration !== undefined && (
+            <span className="text-xs text-muted-foreground">{formatDuration(duration)}</span>
+          )}
+          <StatusIndicator status={status} />
+        </div>
+      </button>
+      <div className={cn(
+        "grid transition-[grid-template-rows] duration-200 ease-in-out",
+        expanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+      )}>
+        <div className="overflow-hidden">
+          <div className="px-3 py-2">
+            {renderContent()}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function guessLanguageFromPath(path: string): string {
+  if (!path) return 'text';
+  const ext = path.split('.').pop()?.toLowerCase() || '';
+  const map: Record<string, string> = {
+    ts: 'typescript', tsx: 'tsx', js: 'javascript', jsx: 'jsx',
+    py: 'python', rb: 'ruby', go: 'go', rs: 'rust',
+    java: 'java', kt: 'kotlin', swift: 'swift',
+    css: 'css', scss: 'scss', html: 'html',
+    json: 'json', yaml: 'yaml', yml: 'yaml',
+    md: 'markdown', sql: 'sql', sh: 'bash',
+    toml: 'toml', xml: 'xml', c: 'c', cpp: 'cpp', h: 'c',
+  };
+  return map[ext] || 'text';
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}

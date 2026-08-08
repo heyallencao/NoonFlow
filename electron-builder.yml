@@ -1,0 +1,60 @@
+appId: com.noonflow.desktop
+productName: NoonFlow
+copyright: Copyright © 2026
+
+directories:
+  output: dist
+
+electronDist: node_modules/electron/dist
+
+files:
+  - dist-electron/**
+  - package.json
+  - "!**/*.map"
+  - "!**/docs{,/**/*}"
+  - "!**/test{,/**/*}"
+  - "!**/tests{,/**/*}"
+  - "!**/__tests__{,/**/*}"
+
+afterSign: scripts/notarize-after-sign.cjs
+
+extraResources:
+  - from: resources/standalone
+    to: standalone
+    filter:
+      - "**/*"
+  - from: electron/icons
+    to: electron/icons
+    filter:
+      - "**/*"
+
+npmRebuild: false
+
+mac:
+  target:
+    - dmg
+    - zip
+  sign: scripts/mac-custom-sign.cjs
+  icon: electron/icons/icon.icns
+  minimumSystemVersion: "13.0"
+  category: public.app-category.developer-tools
+  forceCodeSigning: true
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  notarize: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  protocols:
+    - name: NoonFlow
+      schemes:
+        - noonflow
+
+win:
+  target:
+    - nsis
+  icon: electron/icons/icon.ico
+
+linux:
+  target:
+    - AppImage
+  icon: electron/icons
