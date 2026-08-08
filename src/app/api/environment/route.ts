@@ -1,4 +1,3 @@
-import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -6,7 +5,6 @@ import { NextResponse } from 'next/server';
 import {
   findClaudeBinary,
   findCodexBinary,
-  getExpandedPath,
   getClaudeVersion,
   getCodexVersion,
 } from '@/lib/platform';
@@ -18,24 +16,6 @@ interface FileSnapshot<T = JsonValue | string> {
   exists: boolean;
   content: T | null;
   error?: string;
-}
-
-function readGitValue(args: string[]): string | null {
-  try {
-    const output = execFileSync('git', args, {
-      encoding: 'utf-8',
-      timeout: 3000,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        PATH: getExpandedPath(),
-      },
-    });
-    const value = output.trim();
-    return value || null;
-  } catch {
-    return null;
-  }
 }
 
 function maskSecretValue(value: string): string {
@@ -134,9 +114,6 @@ export async function GET() {
       claudePath ? getClaudeVersion(claudePath) : Promise.resolve(null),
       codexPath ? getCodexVersion(codexPath) : Promise.resolve(null),
     ]);
-    const gitVersionRaw = readGitValue(['--version']);
-    const gitVersion = gitVersionRaw?.replace(/^git version\s+/i, '') || null;
-
     return NextResponse.json({
       runtimes: {
         claude: {
@@ -147,10 +124,6 @@ export async function GET() {
           binaryPath: codexPath || null,
           version: codexVersion,
         },
-      },
-      git: {
-        binaryPath: gitVersion ? 'git' : null,
-        version: gitVersion,
       },
       files: {
         claudeSettings: readJsonFile(claudeSettingsPath),

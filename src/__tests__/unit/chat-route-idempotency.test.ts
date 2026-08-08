@@ -94,7 +94,7 @@ describe('/api/chat request idempotency by client_message_id', () => {
     assistantRuntimes.assistantRuntimePlatform.getCodexVersion = async () => 'test-version';
 
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'monolith-idempotent-replay-'));
-    const session = db.createSession('Replay Duplicate Turn', '', '', workspaceDir, 'code', '', 'chat', undefined, 'codex');
+    const session = db.createSession('Replay Duplicate Turn', '', '', workspaceDir, 'code', '', 'chat', 'codex');
 
     db.upsertUserMessage(session.id, 'msg-replay', 'hello replay');
     const placeholder = db.createAssistantPlaceholderMessage(session.id, 'msg-replay');
@@ -156,7 +156,7 @@ describe('/api/chat request idempotency by client_message_id', () => {
     assistantRuntimes.assistantRuntimePlatform.getCodexVersion = async () => 'test-version';
 
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'monolith-idempotent-inflight-'));
-    const session = db.createSession('Inflight Duplicate Turn', '', '', workspaceDir, 'code', '', 'chat', undefined, 'codex');
+    const session = db.createSession('Inflight Duplicate Turn', '', '', workspaceDir, 'code', '', 'chat', 'codex');
     db.updateSessionStateRecord(session.id, {
       runtimeStatus: 'running',
       runtimeError: '',
@@ -225,7 +225,7 @@ describe('/api/chat request idempotency by client_message_id', () => {
     codexClient.__setCodexCtorForTests(FakeCodex as never);
 
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'monolith-idempotent-error-retry-'));
-    const session = db.createSession('Retry Failed Turn', '', '', workspaceDir, 'code', '', 'chat', undefined, 'codex');
+    const session = db.createSession('Retry Failed Turn', '', '', workspaceDir, 'code', '', 'chat', 'codex');
 
     db.upsertUserMessage(session.id, 'msg-error', 'hello retry');
     const placeholder = db.createAssistantPlaceholderMessage(session.id, 'msg-error');
@@ -316,7 +316,7 @@ describe('/api/chat request idempotency by client_message_id', () => {
     codexClient.__setCodexCtorForTests(FakeCodex as never);
 
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'monolith-idempotent-orphaned-streaming-'));
-    const session = db.createSession('Retry Orphaned Streaming Turn', '', '', workspaceDir, 'code', '', 'chat', undefined, 'codex');
+    const session = db.createSession('Retry Orphaned Streaming Turn', '', '', workspaceDir, 'code', '', 'chat', 'codex');
 
     db.upsertUserMessage(session.id, 'msg-orphaned', 'hello orphaned');
     const placeholder = db.createAssistantPlaceholderMessage(session.id, 'msg-orphaned');
@@ -418,7 +418,7 @@ describe('/api/chat request idempotency by client_message_id', () => {
     codexClient.__setCodexCtorForTests(FakeCodex as never);
 
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'monolith-default-model-resume-workspace-'));
-    const session = db.createSession('Resume Default Model Backfill', '', '', workspaceDir, 'code', '', 'chat', undefined, 'codex');
+    const session = db.createSession('Resume Default Model Backfill', '', '', workspaceDir, 'code', '', 'chat', 'codex');
     db.updateSdkSessionId(session.id, 'thread-existing-default-model');
 
     const response = await route.POST(new Request('http://localhost/api/chat', {

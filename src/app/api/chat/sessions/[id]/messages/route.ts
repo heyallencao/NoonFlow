@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { getMessages, getSession } from '@/lib/db';
 import { agentOrchestrator } from '@/lib/agent-runtime/orchestrator';
 import type { MessagesResponse } from '@/types';
+import { ensureNativeSessionRuntime } from '@/lib/native-session-catalog';
 
 /** Strip base64 `data` fields from <!--files:...--> HTML comments in message content */
 function stripFileData(content: string): string {
@@ -26,7 +27,7 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const existingSession = getSession(id);
+    const existingSession = getSession(id) || ensureNativeSessionRuntime(id);
     if (!existingSession) {
       const empty: MessagesResponse = { messages: [], hasMore: false };
       return Response.json(empty, {

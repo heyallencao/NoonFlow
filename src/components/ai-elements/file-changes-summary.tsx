@@ -31,7 +31,7 @@ interface FileChangesSummaryProps {
   changes: FileChange[];
 }
 
-const REVERTED_MESSAGES_STORAGE_KEY = 'revertedAssistantMessages';
+const revertedMessageIds = new Set<string>();
 
 function extractFilename(path: string): string {
   const parts = path.split('/');
@@ -52,16 +52,8 @@ export function FileChangesSummary({ messageId, changes }: FileChangesSummaryPro
   const [confirmingRevert, setConfirmingRevert] = useState(false);
 
   useEffect(() => {
-    try {
-      const stored = window.localStorage.getItem(REVERTED_MESSAGES_STORAGE_KEY);
-      if (!stored) return;
-
-      const revertedMessageIds = JSON.parse(stored) as string[];
-      if (Array.isArray(revertedMessageIds) && revertedMessageIds.includes(messageId)) {
-        setRevertSuccess(true);
-      }
-    } catch {
-      // Ignore invalid local storage payloads.
+    if (revertedMessageIds.has(messageId)) {
+      setRevertSuccess(true);
     }
   }, [messageId]);
 
@@ -130,14 +122,7 @@ export function FileChangesSummary({ messageId, changes }: FileChangesSummaryPro
         }
       }
 
-      try {
-        const stored = window.localStorage.getItem(REVERTED_MESSAGES_STORAGE_KEY);
-        const revertedMessageIds = stored ? JSON.parse(stored) as string[] : [];
-        const next = Array.from(new Set([...revertedMessageIds, messageId]));
-        window.localStorage.setItem(REVERTED_MESSAGES_STORAGE_KEY, JSON.stringify(next));
-      } catch {
-        // Ignore local storage failures.
-      }
+      revertedMessageIds.add(messageId);
 
       setRevertSuccess(true);
       setTimeout(() => {

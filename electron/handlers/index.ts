@@ -1,4 +1,3 @@
-import { registerBridgeHandlers } from "./bridge";
 import { registerDialogHandlers } from "./dialog";
 import { registerEnvironmentHandlers } from "./environment";
 import { registerInstallHandlers } from "./install";
@@ -13,7 +12,6 @@ export function registerAllHandlers() {
   registerDialogHandlers();
   registerShellHandlers();
   registerWindowHandlers();
-  registerBridgeHandlers();
   registerVersionsHandler();
   registerEnvironmentHandlers();
 }

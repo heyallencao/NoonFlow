@@ -15,7 +15,10 @@ import {
   subscribeSessionRefresh,
   type SessionRefreshDetail,
 } from '@/lib/events/session-refresh-hub';
-import { useSessionsQuery } from '@/lib/queries/session-queries';
+import {
+  fetchSessionsForOpenedWorkspaces,
+  useSessionsQuery,
+} from '@/lib/queries/session-queries';
 import { useWorkspaceStore } from '@/stores/workspace-store';
 
 export interface WorkspaceOption {
@@ -56,11 +59,10 @@ export function useWorkspaceEntryActions(
   const hiddenWorkspaces = useWorkspaceStore((state) => state.hiddenWorkspaces);
   const lastWorkspaceHint = useWorkspaceStore((state) => state.lastWorkspace);
   const hydrateWorkspaces = useWorkspaceStore((state) => state.hydrate);
-  const mergeWorkspacePaths = useWorkspaceStore((state) => state.mergeWorkspacePaths);
   const rememberWorkspace = useWorkspaceStore((state) => state.rememberWorkspace);
   const setLastWorkspace = useWorkspaceStore((state) => state.setLastWorkspace);
 
-  const sessionsQuery = useSessionsQuery('all');
+  const sessionsQuery = useSessionsQuery('all', workspacePaths);
   const sessions = useMemo<ChatSession[]>(
     () => sessionsQuery.data?.sessions ?? [],
     [sessionsQuery.data?.sessions]
@@ -69,15 +71,6 @@ export function useWorkspaceEntryActions(
   useEffect(() => {
     hydrateWorkspaces();
   }, [hydrateWorkspaces]);
-
-  useEffect(() => {
-    const fromSessions = sessions
-      .map((session) => session.working_directory)
-      .filter((path): path is string => Boolean(path));
-    if (fromSessions.length > 0) {
-      mergeWorkspacePaths(fromSessions);
-    }
-  }, [sessions, mergeWorkspacePaths]);
 
   useEffect(() => {
     const handler = (detail: SessionRefreshDetail) => {
@@ -113,14 +106,17 @@ export function useWorkspaceEntryActions(
       rememberWorkspace(normalized);
       setLastWorkspace(normalized);
 
-      const existing = workspaceOptions.find((item) => item.path === normalized);
-      if (existing?.latestSessionId) {
-        router.replace(`${sessionPathPrefix}/${existing.latestSessionId}`);
-        setOpeningWorkspace(null);
-        return;
-      }
-
       try {
+        const latestSessions = await fetchSessionsForOpenedWorkspaces('all', [normalized]);
+        const existing = latestSessions.sessions.find((session) => (
+          session.session_type === sessionType
+          && normalizeWorkspacePath(session.working_directory || '') === normalized
+        ));
+        if (existing) {
+          router.replace(`${sessionPathPrefix}/${existing.id}`);
+          return;
+        }
+
         const sessionPreferences = buildCreateSessionPreferencePayload();
         const res = await fetch('/api/chat/sessions', {
           method: 'POST',
@@ -148,7 +144,6 @@ export function useWorkspaceEntryActions(
       }
     },
     [
-      workspaceOptions,
       rememberWorkspace,
       setLastWorkspace,
       router,

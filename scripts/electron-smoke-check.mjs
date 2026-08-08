@@ -77,9 +77,6 @@ async function run() {
     assert(Boolean(versions?.node), "node version exposed");
     assert(Boolean(versions?.chrome), "chrome version exposed");
 
-    const bridgeActive = await window.evaluate(() => globalThis.electronAPI.bridge.isActive());
-    assert(typeof bridgeActive === "boolean", "bridge.isActive returns boolean");
-
     const prerequisites = await window.evaluate(() => globalThis.electronAPI.install.checkPrerequisites());
     assert(typeof prerequisites === "object" && prerequisites !== null, "install.checkPrerequisites returns object");
     assert(typeof prerequisites.hasNode === "boolean", "install.checkPrerequisites.hasNode is boolean");

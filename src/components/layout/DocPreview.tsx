@@ -27,7 +27,6 @@ import {
 import { STREAMDOWN_SHIKI_THEME } from "@/lib/streamdown-theme";
 import { STREAMDOWN_LINK_SAFETY } from "@/components/ai-elements/streamdown-link-safety";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 import {
   CodeMirrorSourceEditor,
   type CodeMirrorSourceEditorHandle,
@@ -39,7 +38,6 @@ type ViewMode = "source" | "rendered";
 
 interface DocPreviewProps {
   filePath: string;
-  diffFilePath?: string | null;
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
   onClose: () => void;
@@ -60,12 +58,6 @@ interface RawEditError {
   code?: string;
 }
 
-interface GitFileDiffResponse {
-  file: string;
-  stagedPatch: string;
-  unstagedPatch: string;
-  untrackedPatch: string;
-}
 
 const RENDERABLE_EXTENSIONS = new Set([".md", ".mdx", ".html", ".htm"]);
 
@@ -210,7 +202,6 @@ function countSubstringMatches(text: string, query: string): number {
 
 export function DocPreview({
   filePath,
-  diffFilePath,
   viewMode,
   onViewModeChange,
   onClose,
@@ -234,21 +225,13 @@ export function DocPreview({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [fileState, setFileState] = useState<DocFileState | null>(null);
-  const [gitDiffLoading, setGitDiffLoading] = useState(false);
-  const [gitDiffError, setGitDiffError] = useState<string | null>(null);
-  const [gitDiffData, setGitDiffData] = useState<GitFileDiffResponse | null>(null);
   const [isFileSearchVisible, setIsFileSearchVisible] = useState(false);
   const [fileSearchQuery, setFileSearchQuery] = useState("");
   const [fileSearchMatchCount, setFileSearchMatchCount] = useState(0);
   const [activeFileSearchMatch, setActiveFileSearchMatch] = useState(0);
 
   const fileReference = useMemo(() => parseFileReference(filePath), [filePath]);
-  const diffFileReference = useMemo(
-    () => (diffFilePath ? parseFileReference(diffFilePath) : null),
-    [diffFilePath]
-  );
-  const isDiffPreview = Boolean(diffFilePath);
-  const activePreviewPath = diffFileReference?.path || fileReference.path;
+  const activePreviewPath = fileReference.path;
 
   const language = useMemo(() => getLanguageFromPath(activePreviewPath), [activePreviewPath]);
   const canRender = useMemo(() => isRenderable(activePreviewPath), [activePreviewPath]);
@@ -261,7 +244,7 @@ export function DocPreview({
     [canRender, fileState]
   );
   const isDirty = canEdit && draftContent !== content;
-  const canSearchInSource = !isDiffPreview && !loading && !error && viewMode === "source" && !fileState?.binary;
+  const canSearchInSource = !loading && !error && viewMode === "source" && !fileState?.binary;
 
   const getCurrentDocumentText = useCallback(() => {
     if (fileState?.binary) {
@@ -277,64 +260,9 @@ export function DocPreview({
     }
   }, [canUseRenderedView, onViewModeChange, viewMode]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const targetDiffFile = diffFileReference?.path;
-    if (!isDiffPreview || !targetDiffFile || !workingDirectory) {
-      setGitDiffData(null);
-      setGitDiffError(null);
-      setGitDiffLoading(false);
-      return () => {
-        cancelled = true;
-      };
-    }
-    const diffFilePath = targetDiffFile;
-    const cwd = workingDirectory;
-
-    async function loadGitDiff() {
-      setGitDiffLoading(true);
-      setGitDiffError(null);
-      setGitDiffData(null);
-      try {
-        const res = await fetch(
-          `/api/git/diff?cwd=${encodeURIComponent(cwd)}&file=${encodeURIComponent(diffFilePath)}`,
-          { cache: "no-store" }
-        );
-        const data = (await res.json().catch(() => null)) as (GitFileDiffResponse & { error?: string }) | null;
-        if (!res.ok || !data) {
-          throw new Error(data?.error || t("fileTree.diffLoadFailed"));
-        }
-        if (!cancelled) {
-          setGitDiffData(data);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setGitDiffError(err instanceof Error ? err.message : t("fileTree.diffLoadFailed"));
-        }
-      } finally {
-        if (!cancelled) {
-          setGitDiffLoading(false);
-        }
-      }
-    }
-
-    void loadGitDiff();
-    return () => {
-      cancelled = true;
-    };
-  }, [diffFileReference?.path, isDiffPreview, t, workingDirectory]);
 
   useEffect(() => {
     let cancelled = false;
-    if (isDiffPreview) {
-      setLoading(false);
-      setError(null);
-      setSaveError(null);
-      setFileState(null);
-      return () => {
-        cancelled = true;
-      };
-    }
 
     async function loadFallbackPreview(baseParams: URLSearchParams) {
       const previewRes = await fetch(`/api/files/preview?${baseParams.toString()}`);
@@ -429,14 +357,13 @@ export function DocPreview({
     return () => {
       cancelled = true;
     };
-  }, [fileReference.path, isDiffPreview, t, workingDirectory]);
+  }, [fileReference.path, t, workingDirectory]);
 
   useEffect(() => {
     const targetLine = fileReference.line;
     if (
       loading
       || error
-      || isDiffPreview
       || viewMode !== "source"
       || fileState?.binary
       || !targetLine
@@ -448,7 +375,7 @@ export function DocPreview({
       editorRef.current?.scrollToLine(targetLine);
     }, 80);
     return () => window.clearTimeout(timer);
-  }, [contentVersion, error, fileReference.line, fileState?.binary, isDiffPreview, loading, viewMode]);
+  }, [contentVersion, error, fileReference.line, fileState?.binary, loading, viewMode]);
 
   const openFileSearch = useCallback(() => {
     if (!canSearchInSource) {
@@ -542,7 +469,7 @@ export function DocPreview({
 
   useEffect(() => {
     closeFileSearch(false);
-  }, [activePreviewPath, closeFileSearch, isDiffPreview, viewMode]);
+  }, [activePreviewPath, closeFileSearch, viewMode]);
 
   useEffect(() => {
     const isTargetInsidePreview = (target: EventTarget | null): boolean => {
@@ -589,14 +516,10 @@ export function DocPreview({
   );
 
   const handleCopyContent = useCallback(async () => {
-    const patchText = [gitDiffData?.stagedPatch, gitDiffData?.unstagedPatch, gitDiffData?.untrackedPatch]
-      .filter((block) => Boolean(block?.trim()))
-      .join("\n\n");
-    const text = isDiffPreview ? (patchText || activePreviewPath) : (getCurrentDocumentText() || activePreviewPath);
-    await navigator.clipboard.writeText(text);
+    await navigator.clipboard.writeText(getCurrentDocumentText() || activePreviewPath);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  }, [activePreviewPath, getCurrentDocumentText, gitDiffData, isDiffPreview]);
+  }, [activePreviewPath, getCurrentDocumentText]);
 
   const handleEditorChange = useCallback((value: string) => {
     setDraftContent(value);
@@ -724,126 +647,6 @@ export function DocPreview({
   const showSaveControls = !loading && !error && viewMode === "source" && canEdit;
   const dirtyActionButtonClassName =
     "h-7 min-w-[4.5rem] border-border-subtle bg-bg-tertiary text-xs text-sidebar-foreground/88 hover:bg-bg-hover disabled:border-border-subtle disabled:bg-bg-tertiary disabled:text-sidebar-foreground/55";
-
-  const renderPatchBlock = useCallback((title: string, patch: string) => {
-    if (!patch.trim()) return null;
-    const lines = patch.split("\n");
-    let oldLine = 0;
-    let newLine = 0;
-    return (
-      <div className="overflow-hidden rounded-lg border border-border-default/60 bg-black/20">
-        <div className="border-b border-border-default/60 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.06em] text-sidebar-foreground/60">
-          {title}
-        </div>
-        <div className="overflow-x-auto px-2 py-1 text-[11px] leading-5">
-          {lines.map((line, index) => {
-            const hunkMatch = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-            if (hunkMatch) {
-              oldLine = Number(hunkMatch[1]) || 0;
-              newLine = Number(hunkMatch[2]) || 0;
-            }
-
-            let oldLabel = "";
-            let newLabel = "";
-            if (line.startsWith("-") && !line.startsWith("---")) {
-              oldLabel = String(oldLine || "");
-              oldLine += 1;
-            } else if (line.startsWith("+") && !line.startsWith("+++")) {
-              newLabel = String(newLine || "");
-              newLine += 1;
-            } else if (!line.startsWith("@@") && !line.startsWith("---") && !line.startsWith("+++")) {
-              oldLabel = String(oldLine || "");
-              newLabel = String(newLine || "");
-              oldLine += 1;
-              newLine += 1;
-            }
-
-            return (
-              <div
-                key={`${title}-${index}`}
-                className={cn(
-                  "grid min-w-full grid-cols-[3.5rem_3.5rem_1fr] font-mono",
-                  line.startsWith('+++') || line.startsWith('---')
-                    ? "text-sidebar-foreground/70"
-                    : line.startsWith('@@')
-                    ? "text-blue-400"
-                    : line.startsWith('+')
-                    ? "text-emerald-300"
-                    : line.startsWith('-')
-                    ? "text-red-300"
-                    : "text-sidebar-foreground/80"
-                )}
-              >
-                <span className="select-none pr-2 text-right text-sidebar-foreground/45">{oldLabel}</span>
-                <span className="select-none pr-2 text-right text-sidebar-foreground/45">{newLabel}</span>
-                <span className="whitespace-pre">{line || " "}</span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    );
-  }, []);
-
-  if (isDiffPreview) {
-    const hasPatch = Boolean(
-      gitDiffData?.stagedPatch?.trim()
-      || gitDiffData?.unstagedPatch?.trim()
-      || gitDiffData?.untrackedPatch?.trim()
-    );
-    return (
-      <div
-        ref={previewRootRef}
-        data-doc-preview-root="true"
-        className="hidden h-full shrink-0 flex-col overflow-hidden bg-background pl-2 lg:flex"
-        style={{ width }}
-      >
-        <div className="mt-5 flex h-12 shrink-0 items-center gap-2 px-3">
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium">{fileName}</p>
-          </div>
-          <Button variant="ghost" size="icon-sm" onClick={handleCopyContent}>
-            {copied ? (
-              <HugeiconsIcon icon={Tick01Icon} className="h-3.5 w-3.5 text-green-500" />
-            ) : (
-              <HugeiconsIcon icon={Copy01Icon} className="h-3.5 w-3.5" />
-            )}
-            <span className="sr-only">{t("docPreview.copyContent")}</span>
-          </Button>
-          <Button variant="ghost" size="icon-sm" onClick={onClose}>
-            <HugeiconsIcon icon={Cancel01Icon} className="h-3.5 w-3.5" />
-            <span className="sr-only">{t("docPreview.closePreview")}</span>
-          </Button>
-        </div>
-        <div className="flex shrink-0 items-center gap-2 px-3 pb-2">
-          <p className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground/60">{breadcrumb}</p>
-          <span className="rounded-full border border-blue-400/40 bg-blue-500/12 px-2 py-0.5 text-[10px] text-blue-200">
-            {t("fileTree.diffTitle")}
-          </span>
-        </div>
-        <div className="min-h-0 flex-1 overflow-auto px-3 pb-3">
-          {gitDiffLoading ? (
-            <div className="flex h-full items-center justify-center py-12">
-              <HugeiconsIcon icon={Loading02Icon} className="h-5 w-5 animate-spin text-muted-foreground" />
-            </div>
-          ) : gitDiffError ? (
-            <div className="px-1 py-4 text-center">
-              <p className="text-sm text-destructive">{gitDiffError}</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {renderPatchBlock(t("fileTree.diffStaged"), gitDiffData?.stagedPatch || "")}
-              {renderPatchBlock(t("fileTree.diffUnstaged"), gitDiffData?.unstagedPatch || "")}
-              {renderPatchBlock(t("fileTree.diffUntracked"), gitDiffData?.untrackedPatch || "")}
-              {!hasPatch && (
-                <p className="text-[11px] text-sidebar-foreground/60">{t("fileTree.diffNoPatch")}</p>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div

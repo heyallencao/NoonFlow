@@ -43,8 +43,6 @@ export interface FolderDialogResult {
 export interface InstallPrerequisites {
   hasNode: boolean;
   nodeVersion?: string;
-  hasGit: boolean;
-  gitVersion?: string;
   hasClaude: boolean;
   claudeVersion?: string;
   hasCodex: boolean;
@@ -57,7 +55,6 @@ export interface InstallPrerequisites {
 
 export interface InstallStartOptions {
   includeNode?: boolean;
-  installGit?: boolean;
   installClaude?: boolean;
   installCodex?: boolean;
   initializeClaude?: boolean;

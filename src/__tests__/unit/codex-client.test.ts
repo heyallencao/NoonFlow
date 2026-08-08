@@ -609,6 +609,124 @@ exit 42
     }
   });
 
+  it('keeps non-terminal Codex item errors as warnings when the turn completes', async () => {
+    const originalHome = process.env.HOME;
+    const binaryPath = getTestCodexBinaryPath();
+    const binaryDir = path.dirname(binaryPath);
+    process.env.NOONFLOW_CODEX_BACKEND = 'sdk-system-cli';
+    delete process.env.NEXT_PUBLIC_NOONFLOW_CODEX_BACKEND;
+
+    fs.mkdirSync(binaryDir, { recursive: true });
+    fs.writeFileSync(binaryPath, '#!/bin/sh\nexit 0\n');
+    fs.chmodSync(binaryPath, 0o755);
+    process.env.HOME = testCodexHome!;
+
+    try {
+      const codexModule = await importFreshCodexClient();
+
+      class FakeCodex {
+        startThread() {
+          return {
+            runStreamed: async () => ({
+              events: createThreadEventsStream([
+                { type: 'thread.started', thread_id: 'sdk-thread-warning' },
+                { type: 'turn.started' },
+                {
+                  type: 'item.completed',
+                  item: {
+                    id: 'warning_1',
+                    details: {
+                      type: 'error',
+                      message: 'clamping SessionEnd hook timeout to 3s',
+                    },
+                  },
+                },
+                {
+                  type: 'item.completed',
+                  item: {
+                    id: 'item_1',
+                    details: { type: 'agent_message', text: 'normal answer' },
+                  },
+                },
+                { type: 'turn.completed', usage: { input_tokens: 2, output_tokens: 3 } },
+              ]),
+            }),
+          };
+        }
+
+        resumeThread() {
+          throw new Error('resume should not be used in this test');
+        }
+      }
+
+      codexModule.__setCodexCtorForTests(FakeCodex as never);
+
+      const payload = await readStream(codexModule.streamCodex({
+        prompt: 'Return a normal answer',
+        sessionId: 'session-sdk-warning',
+      }));
+
+      assert.match(payload, /"type":"text","data":"normal answer"/);
+      assert.match(payload, /"type":"done"/);
+      assert.doesNotMatch(payload, /"type":"error"/);
+    } finally {
+      resetTestCodexHome(originalHome);
+    }
+  });
+
+  it('fails when a Codex item error is followed by stream end without turn completion', async () => {
+    const originalHome = process.env.HOME;
+    const binaryPath = getTestCodexBinaryPath();
+    const binaryDir = path.dirname(binaryPath);
+    process.env.NOONFLOW_CODEX_BACKEND = 'sdk-system-cli';
+    delete process.env.NEXT_PUBLIC_NOONFLOW_CODEX_BACKEND;
+
+    fs.mkdirSync(binaryDir, { recursive: true });
+    fs.writeFileSync(binaryPath, '#!/bin/sh\nexit 0\n');
+    fs.chmodSync(binaryPath, 0o755);
+    process.env.HOME = testCodexHome!;
+
+    try {
+      const codexModule = await importFreshCodexClient();
+
+      class FakeCodex {
+        startThread() {
+          return {
+            runStreamed: async () => ({
+              events: createThreadEventsStream([
+                { type: 'thread.started', thread_id: 'sdk-thread-incomplete' },
+                { type: 'turn.started' },
+                {
+                  type: 'item.completed',
+                  item: {
+                    id: 'error_1',
+                    details: { type: 'error', message: 'runtime stopped early' },
+                  },
+                },
+              ]),
+            }),
+          };
+        }
+
+        resumeThread() {
+          throw new Error('resume should not be used in this test');
+        }
+      }
+
+      codexModule.__setCodexCtorForTests(FakeCodex as never);
+
+      const payload = await readStream(codexModule.streamCodex({
+        prompt: 'This turn should fail',
+        sessionId: 'session-sdk-incomplete',
+      }));
+
+      assert.match(payload, /"type":"error","data":"runtime stopped early"/);
+      assert.match(payload, /"type":"done"/);
+    } finally {
+      resetTestCodexHome(originalHome);
+    }
+  });
+
   it('falls back from sdk resume to fresh turn when resume fails before events', async () => {
     const originalHome = process.env.HOME;
     const binaryPath = getTestCodexBinaryPath();

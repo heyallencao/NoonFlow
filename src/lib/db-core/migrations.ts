@@ -4,7 +4,6 @@ import crypto from 'crypto';
 import { expirePermissionRequestsInDatabase } from '../db-permission-requests';
 import {
   ENSURE_API_PROVIDERS_TABLE_SQL,
-  ENSURE_BRIDGE_TABLES_SQL,
   ENSURE_CONTEXT_BUDGET_EVENTS_TABLE_SQL,
   ENSURE_MEDIA_GENERATIONS_TABLE_SQL,
   ENSURE_MEDIA_JOBS_TABLES_SQL,
@@ -12,8 +11,6 @@ import {
   ENSURE_RUNTIME_LOCKS_TABLE_SQL,
   ENSURE_SESSION_CHANGE_LOG_SQL,
   ENSURE_TASKS_TABLE_SQL,
-  ENSURE_WIDGET_TELEMETRY_EVENTS_TABLE_SQL,
-  ENSURE_WORKTREES_TABLE_SQL,
 } from './migration-sql';
 
 export function migrateDb(db: Database.Database): void {
@@ -253,9 +250,6 @@ export function migrateDb(db: Database.Database): void {
     db.exec('ALTER TABLE context_budget_events ADD COLUMN recovery_duration_ms INTEGER');
   }
 
-  // Ensure widget telemetry events table exists for Generative UI observability
-  db.exec(ENSURE_WIDGET_TELEMETRY_EVENTS_TABLE_SQL);
-
   // Add favorited column to media_generations if missing
   try {
     db.exec("ALTER TABLE media_generations ADD COLUMN favorited INTEGER NOT NULL DEFAULT 0");
@@ -315,70 +309,8 @@ export function migrateDb(db: Database.Database): void {
     }
   }
 
-  // Ensure bridge tables exist for databases created before bridge feature
-  db.exec(ENSURE_BRIDGE_TABLES_SQL);
-
-  // Migrate channel_permission_links for databases created before these columns were added
-  const permLinkCols = db.prepare("PRAGMA table_info(channel_permission_links)").all() as { name: string }[];
-  const permLinkColNames = permLinkCols.map(c => c.name);
-  if (permLinkColNames.length > 0 && !permLinkColNames.includes('tool_name')) {
-    db.exec("ALTER TABLE channel_permission_links ADD COLUMN tool_name TEXT NOT NULL DEFAULT ''");
-  }
-  if (permLinkColNames.length > 0 && !permLinkColNames.includes('suggestions')) {
-    db.exec("ALTER TABLE channel_permission_links ADD COLUMN suggestions TEXT NOT NULL DEFAULT ''");
-  }
-  if (permLinkColNames.length > 0 && !permLinkColNames.includes('resolved')) {
-    db.exec("ALTER TABLE channel_permission_links ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0");
-  }
-
   db.exec(ENSURE_SESSION_CHANGE_LOG_SQL);
 
-  // --- Worktree migration ---
-  // Add worktree_id column to chat_sessions
-  if (!colNames.includes('worktree_id')) {
-    db.exec("ALTER TABLE chat_sessions ADD COLUMN worktree_id TEXT NOT NULL DEFAULT ''");
-  }
-
-  // Ensure worktrees table exists (for databases created before this feature)
-  db.exec(ENSURE_WORKTREES_TABLE_SQL);
-
-  // Auto-create default worktree records for existing workspaces and backfill sessions
-  const orphanSessions = db.prepare(
-    "SELECT DISTINCT working_directory FROM chat_sessions WHERE working_directory != '' AND worktree_id = ''"
-  ).all() as { working_directory: string }[];
-  for (const row of orphanSessions) {
-    const wp = row.working_directory;
-    // Ensure a default worktree exists for this workspace. Older databases may
-    // already contain a row with the same worktree_path but a different
-    // workspace_path, so we must de-duplicate against both lookup shapes.
-    const existing = db.prepare(
-      'SELECT id FROM worktrees WHERE workspace_path = ? AND is_default = 1'
-    ).get(wp) as { id: string } | undefined;
-    let wtId: string;
-    if (existing) {
-      wtId = existing.id;
-    } else {
-      const existingByPath = db.prepare(
-        'SELECT id FROM worktrees WHERE worktree_path = ?'
-      ).get(wp) as { id: string } | undefined;
-      if (existingByPath) {
-        wtId = existingByPath.id;
-        db.prepare(
-          "UPDATE worktrees SET workspace_path = ?, is_default = 1, updated_at = datetime('now') WHERE id = ?"
-        ).run(wp, wtId);
-      } else {
-        wtId = crypto.randomBytes(16).toString('hex');
-        const now = new Date().toISOString().replace('T', ' ').split('.')[0];
-        db.prepare(
-          'INSERT INTO worktrees (id, workspace_path, worktree_path, branch, is_default, name, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?)'
-        ).run(wtId, wp, wp, '', 'default', now, now);
-      }
-    }
-    // Backfill worktree_id for sessions in this workspace
-    db.prepare(
-      "UPDATE chat_sessions SET worktree_id = ? WHERE working_directory = ? AND worktree_id = ''"
-    ).run(wtId, wp);
-  }
 }
 
 function dedupeMessagesByClientMessageId(db: Database.Database): void {

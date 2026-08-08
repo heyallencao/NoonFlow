@@ -1,5 +1,5 @@
-import { listClaudeSessions, parseClaudeSession } from '@/lib/claude-session-parser';
-import { listCodexSessions, parseCodexSession } from '@/lib/codex-session-parser';
+import { listClaudeSessionPage, listClaudeSessions, parseClaudeSession } from '@/lib/claude-session-parser';
+import { listCodexSessionPage, listCodexSessions, parseCodexSession } from '@/lib/codex-session-parser';
 import type { AssistantRuntime, Message } from '@/types';
 import type { SessionPreviewTag } from '@/lib/session-preview';
 
@@ -38,6 +38,21 @@ export interface ReplaySessionDetail {
   messages: Message[];
 }
 
+export interface ReplaySessionPageOptions {
+  workspaces: readonly string[];
+  cursor?: number;
+  limit?: number;
+  runtime?: AssistantRuntime;
+  query?: string;
+}
+
+export interface ReplaySessionPage {
+  sessions: ReplaySessionInfo[];
+  total: number;
+  workspaceTotal: number;
+  nextCursor: number | null;
+}
+
 function toReplayMessages(sessionId: string, messages: Array<{
   role: 'user' | 'assistant';
   contentBlocks: unknown;
@@ -54,7 +69,22 @@ function toReplayMessages(sessionId: string, messages: Array<{
 }
 
 export function listReplaySessions(): ReplaySessionInfo[] {
-  const claudeSessions = listClaudeSessions().map((session) => ({
+  const claudeSessions = listClaudeSessions().map(toClaudeReplayInfo);
+  const codexSessions = listCodexSessions().map(toCodexReplayInfo);
+
+  return [...claudeSessions, ...codexSessions].sort(compareReplaySessions);
+}
+
+export function listReplaySessionsForWorkspaces(workspaces: readonly string[]): ReplaySessionInfo[] {
+  const normalizedWorkspaces = Array.from(new Set(workspaces.map((workspace) => workspace.trim()).filter(Boolean)));
+  if (normalizedWorkspaces.length === 0) return [];
+  const claudeSessions = listClaudeSessionPage({ projectPaths: normalizedWorkspaces }).sessions.map(toClaudeReplayInfo);
+  const codexSessions = listCodexSessionPage({ projectPaths: normalizedWorkspaces }).sessions.map(toCodexReplayInfo);
+  return [...claudeSessions, ...codexSessions].sort(compareReplaySessions);
+}
+
+function toClaudeReplayInfo(session: ReturnType<typeof listClaudeSessions>[number]): ReplaySessionInfo {
+  return {
     runtime: 'claude_code' as const,
     sessionId: session.sessionId,
     projectPath: session.projectPath,
@@ -69,9 +99,11 @@ export function listReplaySessions(): ReplaySessionInfo[] {
     assistantMessageCount: session.assistantMessageCount,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
-  }));
+  };
+}
 
-  const codexSessions = listCodexSessions().map((session) => ({
+function toCodexReplayInfo(session: ReturnType<typeof listCodexSessions>[number]): ReplaySessionInfo {
+  return {
     runtime: 'codex' as const,
     sessionId: session.sessionId,
     projectPath: session.projectPath,
@@ -86,11 +118,62 @@ export function listReplaySessions(): ReplaySessionInfo[] {
     assistantMessageCount: session.assistantMessageCount,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
-  }));
+  };
+}
 
-  return [...claudeSessions, ...codexSessions].sort(
-    (left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
-  );
+function compareReplaySessions(left: ReplaySessionInfo, right: ReplaySessionInfo): number {
+  return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
+}
+
+function matchesReplayQuery(session: ReplaySessionInfo, rawQuery: string): boolean {
+  const query = rawQuery.trim().toLowerCase();
+  if (!query) return true;
+  return [
+    session.runtime,
+    session.sessionId,
+    session.projectName,
+    session.projectPath,
+    session.cwd,
+    session.gitBranch,
+    session.model,
+    session.preview,
+  ].some((value) => value?.toLowerCase().includes(query));
+}
+
+export function listReplaySessionPage(options: ReplaySessionPageOptions): ReplaySessionPage {
+  const workspaces = Array.from(new Set(options.workspaces.map((workspace) => workspace.trim()).filter(Boolean)));
+  if (workspaces.length === 0) {
+    return { sessions: [], total: 0, workspaceTotal: 0, nextCursor: null };
+  }
+
+  const cursor = Math.max(0, Math.trunc(options.cursor || 0));
+  const limit = Math.min(50, Math.max(1, Math.trunc(options.limit || 20)));
+  const query = options.query?.trim() || '';
+  const sourceLimit = query ? undefined : cursor + limit + 1;
+  const claudePage = listClaudeSessionPage({
+    projectPaths: workspaces,
+    limit: options.runtime === 'codex' ? 0 : sourceLimit,
+  });
+  const codexPage = listCodexSessionPage({
+    projectPaths: workspaces,
+    limit: options.runtime === 'claude_code' ? 0 : sourceLimit,
+  });
+  const candidates = [
+    ...claudePage.sessions.map(toClaudeReplayInfo),
+    ...codexPage.sessions.map(toCodexReplayInfo),
+  ]
+    .sort(compareReplaySessions)
+    .filter((session) => matchesReplayQuery(session, query));
+  const total = query ? candidates.length : claudePage.total + codexPage.total;
+  const sessions = candidates.slice(cursor, cursor + limit);
+  const hasLookahead = candidates.length > cursor + limit;
+
+  return {
+    sessions,
+    total,
+    workspaceTotal: claudePage.total + codexPage.total,
+    nextCursor: hasLookahead ? cursor + limit : null,
+  };
 }
 
 export function getReplaySessionDetail(

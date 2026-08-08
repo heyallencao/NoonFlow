@@ -7,7 +7,6 @@ import {
   CodeIcon,
   CpuIcon,
   Download04Icon,
-  GitBranchIcon,
   Loading02Icon,
   PencilEdit01Icon,
   RefreshIcon,
@@ -41,14 +40,12 @@ import {
 import { ProviderForm } from "./ProviderForm";
 import type { ProviderFormData } from "./ProviderForm";
 
-type InstallerTarget = "git" | "claude" | "codex";
+type InstallerTarget = "claude" | "codex";
 type RuntimeCardKey = "claude" | "codex";
 
 interface InstallPrereqSnapshot {
   hasNode: boolean;
   nodeVersion?: string;
-  hasGit: boolean;
-  gitVersion?: string;
   hasClaude: boolean;
   claudeVersion?: string;
   hasCodex: boolean;
@@ -68,10 +65,6 @@ interface EnvironmentResponse {
   runtimes: {
     claude: { binaryPath: string | null; version: string | null };
     codex: { binaryPath: string | null; version: string | null };
-  };
-  git: {
-    binaryPath: string | null;
-    version: string | null;
   };
   files: {
     claudeSettings: FileSnapshot;
@@ -142,15 +135,9 @@ interface RuntimeCard {
   statusMessage: string | null | undefined;
 }
 
-interface GitStatusCard {
-  label: string;
-  version: string | null;
-  installed: boolean;
-}
 
 function RuntimeStatusSection({
   runtimeCards,
-  gitCard,
   nodeVersion,
   selectedRuntime,
   onSelectRuntime,
@@ -159,7 +146,6 @@ function RuntimeStatusSection({
   isZh,
 }: {
   runtimeCards: RuntimeCard[];
-  gitCard: GitStatusCard;
   nodeVersion: string | undefined;
   selectedRuntime: RuntimeCardKey;
   onSelectRuntime: (key: RuntimeCardKey) => void;
@@ -270,57 +256,7 @@ function RuntimeStatusSection({
         );
       })}
 
-      <div className="rounded-lg border border-border-subtle bg-background/60 px-3 py-2.5 text-left">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-border-subtle bg-muted/50">
-              <HugeiconsIcon icon={GitBranchIcon} className="h-4 w-4 text-foreground" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-semibold text-foreground">{gitCard.label}</span>
-                {gitCard.version && (
-                  <span className="text-[11px] text-muted-foreground">{gitCard.version}</span>
-                )}
-              </div>
-              <div className="mt-0.5 flex items-center gap-2">
-                <span
-                  className={cn(
-                    "rounded-full border px-1.5 py-0.5 text-[10px]",
-                    gitCard.installed
-                      ? "border-success/20 bg-success/10 text-success"
-                      : "border-border-subtle bg-muted text-muted-foreground",
-                  )}
-                >
-                  {gitCard.installed
-                    ? isZh
-                      ? "已安装"
-                      : "Installed"
-                    : isZh
-                      ? "未检测到"
-                      : "Not detected"}
-                </span>
-                <span className="text-[10px] text-muted-foreground">
-                  {isZh
-                    ? "支持 monorepo 拉取与仓库操作"
-                    : "Required for clone, fetch, and repo operations"}
-                </span>
-              </div>
-            </div>
-          </div>
-          {hasNativeInstallBridge && !gitCard.installed && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => onInstallClick("git")}
-              className="h-6 text-[10px] gap-1 px-2"
-            >
-              <HugeiconsIcon icon={Download04Icon} className="h-3 w-3" />
-              {isZh ? "安装 Git" : "Install Git"}
-            </Button>
-          )}
-        </div>
-      </div>
+
     </div>
   );
 }
@@ -447,8 +383,6 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
       setPrereq({
         hasNode: data.hasNode,
         nodeVersion: data.nodeVersion,
-        hasGit: data.hasGit,
-        gitVersion: data.gitVersion,
         hasClaude: data.hasClaude,
         claudeVersion: data.claudeVersion,
         hasCodex: data.hasCodex,
@@ -566,11 +500,6 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
       || environment?.files.claudeLegacyConfig.exists,
   );
   const codexLoginDetected = Boolean(environment?.files.codexAuth.exists);
-  const gitCard: GitStatusCard = {
-    label: "Git",
-    version: prereq?.gitVersion ?? environment?.git.version ?? null,
-    installed: prereq?.hasGit ?? Boolean(environment?.git.binaryPath || environment?.git.version),
-  };
 
   const nonMediaPresets = QUICK_PRESETS.filter((preset) => preset.category !== "media");
   const domesticPresetKeys = new Set([
@@ -845,8 +774,8 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
               </p>
               <p className="mt-1 text-sm text-muted-foreground">
                 {isZh
-                  ? "首次打开 monorepo 先把 Git、Claude Code、Codex 准备好，其他细节先不展开。"
-                  : "Bootstrap Git, Claude Code, and Codex first when opening a monorepo for the first time."}
+                  ? "首次打开时先准备好 Claude Code 和 Codex，其他细节先不展开。"
+                  : "Set up Claude Code and Codex first."}
               </p>
             </div>
             <Button
@@ -866,7 +795,6 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
 
           <RuntimeStatusSection
             runtimeCards={runtimeCards}
-            gitCard={gitCard}
             nodeVersion={prereq?.nodeVersion}
             selectedRuntime={selectedRuntime}
             onSelectRuntime={setSelectedRuntime}
@@ -880,8 +808,8 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
 
           <div className="rounded-xl border border-border-subtle bg-background/60 px-4 py-3 text-[11px] text-muted-foreground">
             {isZh
-              ? "Git 这里只负责安装检测，不在这里配置 user.name / user.email。Claude 和 Codex 继续保留 CLI 登录 / API 模式切换。"
-              : "Git setup here is installation-only. Claude and Codex keep the CLI login and API mode switch."}
+              ? "Claude 和 Codex 保留 CLI 登录 / API 模式切换。"
+              : "Claude and Codex keep the CLI login and API mode switch."}
           </div>
 
           <div className="rounded-xl border border-border-subtle bg-background/60 p-4 space-y-3">

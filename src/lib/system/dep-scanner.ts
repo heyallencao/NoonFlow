@@ -67,7 +67,7 @@ async function scanNodeJsDeps(repoPath: string): Promise<Dependency[]> {
         });
       }
     }
-  } catch (error) {
+  } catch {
     // File doesn't exist or invalid JSON
     return [];
   }
@@ -103,7 +103,7 @@ async function scanPythonDeps(repoPath: string): Promise<Dependency[]> {
         });
       }
     }
-  } catch (error) {
+  } catch {
     // File doesn't exist
     return [];
   }
@@ -149,7 +149,7 @@ async function scanGoDeps(repoPath: string): Promise<Dependency[]> {
         }
       }
     }
-  } catch (error) {
+  } catch {
     // File doesn't exist
     return [];
   }
@@ -205,7 +205,7 @@ async function scanRustDeps(repoPath: string): Promise<Dependency[]> {
         }
       }
     }
-  } catch (error) {
+  } catch {
     // File doesn't exist
     return [];
   }

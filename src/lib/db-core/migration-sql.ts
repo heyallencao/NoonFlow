@@ -164,27 +164,6 @@ export const ENSURE_CONTEXT_BUDGET_EVENTS_TABLE_SQL = `
   CREATE INDEX IF NOT EXISTS idx_context_budget_events_runtime_created_at ON context_budget_events(assistant_runtime, created_at);
 `;
 
-export const ENSURE_WIDGET_TELEMETRY_EVENTS_TABLE_SQL = `
-  CREATE TABLE IF NOT EXISTS widget_telemetry_events (
-    id TEXT PRIMARY KEY,
-    event_name TEXT NOT NULL,
-    ok INTEGER NOT NULL DEFAULT 1,
-    error_code TEXT NOT NULL DEFAULT '',
-    assistant_runtime TEXT NOT NULL DEFAULT '',
-    session_id TEXT,
-    message_id TEXT NOT NULL DEFAULT '',
-    trace_id TEXT NOT NULL DEFAULT '',
-    schema_version TEXT NOT NULL DEFAULT '1.0',
-    metadata TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE SET NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_widget_telemetry_created_at ON widget_telemetry_events(created_at);
-  CREATE INDEX IF NOT EXISTS idx_widget_telemetry_event_created_at ON widget_telemetry_events(event_name, created_at);
-  CREATE INDEX IF NOT EXISTS idx_widget_telemetry_code_created_at ON widget_telemetry_events(error_code, created_at);
-  CREATE INDEX IF NOT EXISTS idx_widget_telemetry_session_created_at ON widget_telemetry_events(session_id, created_at);
-`;
-
 export const ENSURE_RUNTIME_LOCKS_TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS session_runtime_locks (
     session_id TEXT PRIMARY KEY,
@@ -219,75 +198,6 @@ export const ENSURE_PERMISSION_REQUESTS_TABLE_SQL = `
   CREATE INDEX IF NOT EXISTS idx_permission_expires_at ON permission_requests(expires_at);
 `;
 
-export const ENSURE_BRIDGE_TABLES_SQL = `
-  CREATE TABLE IF NOT EXISTS channel_bindings (
-    id TEXT PRIMARY KEY,
-    channel_type TEXT NOT NULL,
-    chat_id TEXT NOT NULL,
-    monolith_session_id TEXT NOT NULL,
-    sdk_session_id TEXT NOT NULL DEFAULT '',
-    working_directory TEXT NOT NULL DEFAULT '',
-    model TEXT NOT NULL DEFAULT '',
-    mode TEXT NOT NULL DEFAULT 'code' CHECK(mode IN ('code', 'plan', 'ask')),
-    active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (monolith_session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
-    UNIQUE(channel_type, chat_id)
-  );
-  CREATE INDEX IF NOT EXISTS idx_channel_bindings_session ON channel_bindings(monolith_session_id);
-  CREATE INDEX IF NOT EXISTS idx_channel_bindings_lookup ON channel_bindings(channel_type, chat_id);
-
-  CREATE TABLE IF NOT EXISTS channel_offsets (
-    channel_type TEXT PRIMARY KEY,
-    offset_value TEXT NOT NULL DEFAULT '0',
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS channel_dedupe (
-    dedup_key TEXT PRIMARY KEY,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    expires_at TEXT NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_channel_dedupe_expires ON channel_dedupe(expires_at);
-
-  CREATE TABLE IF NOT EXISTS channel_outbound_refs (
-    id TEXT PRIMARY KEY,
-    channel_type TEXT NOT NULL,
-    chat_id TEXT NOT NULL,
-    monolith_session_id TEXT NOT NULL,
-    platform_message_id TEXT NOT NULL,
-    purpose TEXT NOT NULL DEFAULT 'response',
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX IF NOT EXISTS idx_outbound_refs_session ON channel_outbound_refs(monolith_session_id);
-
-  CREATE TABLE IF NOT EXISTS channel_audit_logs (
-    id TEXT PRIMARY KEY,
-    channel_type TEXT NOT NULL,
-    chat_id TEXT NOT NULL,
-    direction TEXT NOT NULL CHECK(direction IN ('inbound', 'outbound')),
-    message_id TEXT NOT NULL DEFAULT '',
-    summary TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX IF NOT EXISTS idx_audit_logs_chat ON channel_audit_logs(channel_type, chat_id);
-  CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON channel_audit_logs(created_at);
-
-  CREATE TABLE IF NOT EXISTS channel_permission_links (
-    id TEXT PRIMARY KEY,
-    permission_request_id TEXT NOT NULL,
-    channel_type TEXT NOT NULL,
-    chat_id TEXT NOT NULL,
-    message_id TEXT NOT NULL,
-    tool_name TEXT NOT NULL DEFAULT '',
-    suggestions TEXT NOT NULL DEFAULT '',
-    resolved INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX IF NOT EXISTS idx_perm_links_request ON channel_permission_links(permission_request_id);
-`;
-
 export const ENSURE_SESSION_CHANGE_LOG_SQL = `
   CREATE TABLE IF NOT EXISTS session_change_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -320,18 +230,4 @@ export const ENSURE_SESSION_CHANGE_LOG_SQL = `
     INSERT INTO session_change_log (session_id, session_type, change_type, changed_at)
     VALUES (OLD.id, OLD.session_type, 'delete', datetime('now'));
   END;
-`;
-
-export const ENSURE_WORKTREES_TABLE_SQL = `
-  CREATE TABLE IF NOT EXISTS worktrees (
-    id TEXT PRIMARY KEY,
-    workspace_path TEXT NOT NULL,
-    worktree_path TEXT NOT NULL UNIQUE,
-    branch TEXT NOT NULL DEFAULT '',
-    is_default INTEGER NOT NULL DEFAULT 0,
-    name TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX IF NOT EXISTS idx_worktrees_workspace ON worktrees(workspace_path);
 `;

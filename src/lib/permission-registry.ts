@@ -1,5 +1,4 @@
 import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
-import { resolvePermissionRequest as dbResolvePermission } from './db';
 
 interface PendingPermission {
   resolve: (result: PermissionResult) => void;
@@ -25,20 +24,14 @@ function getMap(): Map<string, PendingPermission> {
 
 /**
  * Helper to deny and remove a pending permission entry.
- * Also writes the denial to DB for persistence/audit.
  */
-function denyAndRemove(id: string, message: string, dbStatus: 'timeout' | 'aborted' = 'aborted') {
+function denyAndRemove(id: string, message: string) {
   const map = getMap();
   const entry = map.get(id);
   if (!entry) return;
   clearTimeout(entry.timer);
   entry.resolve({ behavior: 'deny', message });
   map.delete(id);
-  try {
-    dbResolvePermission(id, dbStatus, { message });
-  } catch {
-    // DB write failure should not affect in-memory path
-  }
 }
 
 /**
@@ -59,11 +52,6 @@ export function registerPendingPermission(
         console.warn(`[permission-registry] Permission request ${id} timed out after ${TIMEOUT_MS / 1000}s`);
         resolve({ behavior: 'deny', message: 'Permission request timed out' });
         map.delete(id);
-        try {
-          dbResolvePermission(id, 'timeout', { message: 'Permission request timed out' });
-        } catch {
-          // DB write failure should not affect in-memory path
-        }
       }
     }, TIMEOUT_MS);
 
@@ -102,18 +90,6 @@ export function resolvePendingPermission(
 
   if (result.behavior === 'allow' && !result.updatedInput) {
     result = { ...result, updatedInput: entry.toolInput };
-  }
-
-  // Dual-write: persist to DB before resolving in-memory
-  try {
-    const dbStatus = result.behavior === 'allow' ? 'allow' as const : 'deny' as const;
-    dbResolvePermission(id, dbStatus, {
-      updatedPermissions: result.behavior === 'allow' ? (result.updatedPermissions as unknown[]) : undefined,
-      updatedInput: result.behavior === 'allow' ? (result.updatedInput as Record<string, unknown>) : undefined,
-      message: result.behavior === 'deny' ? result.message : undefined,
-    });
-  } catch {
-    // DB write failure should not affect in-memory path
   }
 
   entry.resolve(result);

@@ -8,18 +8,15 @@ import {
   CodeIcon,
   CpuIcon,
   Settings02Icon,
-  Wifi01Icon,
 } from "@hugeicons/core-free-icons";
 import { cn } from "@/lib/utils";
 import { EnvironmentSection } from "./EnvironmentSection";
 import { GeneralSettings } from "./GeneralSettings";
 import { ModelProviderSection } from "./ModelProviderSection";
-import { BridgeSection } from "../bridge/BridgeSection";
-import { TelegramBridgeSection } from "../bridge/TelegramBridgeSection";
 import { useTranslation } from "@/hooks/useTranslation";
 import { Button } from "@/components/ui/button";
 
-type Section = "general" | "environment" | "providers" | "remote-connections";
+type Section = "general" | "environment" | "providers";
 
 const DEFAULT_SECTION: Section = "general";
 
@@ -44,11 +41,6 @@ const sidebarItems: SidebarItem[] = [
     id: "providers",
     icon: CpuIcon,
     label: { zh: "服务商", en: "Providers" },
-  },
-  {
-    id: "remote-connections",
-    icon: Wifi01Icon,
-    label: { zh: "远程连接", en: "Remote" },
   },
 ];
 
@@ -103,34 +95,8 @@ export function SettingsLayout() {
     if (activeSection === "providers") {
       return <ModelProviderSection mode="providers" />;
     }
-    return (
-      <div className="space-y-10">
-        {/* Workspace Bridge */}
-        <div>
-          <h3 className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground mb-5">
-            {isZh ? "Workspace Bridge" : "Workspace Bridge"}
-          </h3>
-          <p className="text-sm text-muted-foreground mb-5 leading-relaxed">
-            {isZh
-              ? "允许外部客户端安全接入当前工作区。"
-              : "Allow external clients to access the current workspace securely."}
-          </p>
-          <BridgeSection />
-        </div>
-
-        {/* Channel Providers */}
-        <div>
-          <h3 className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground mb-5">
-            {t("bridge.telegramSettings")}
-          </h3>
-          <p className="text-sm text-muted-foreground mb-5 leading-relaxed">
-            {t("bridge.telegramSettingsDesc")}
-          </p>
-          <TelegramBridgeSection />
-        </div>
-      </div>
-    );
-  }, [activeSection, isZh, t]);
+    return <ModelProviderSection mode="providers" />;
+  }, [activeSection]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">

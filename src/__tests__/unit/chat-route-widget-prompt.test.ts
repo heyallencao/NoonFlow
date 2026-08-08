@@ -87,7 +87,6 @@ describe('/api/chat widget prompt injection', () => {
       'code',
       '',
       'chat',
-      undefined,
       'claude_code',
     );
     let capturedSystemPrompt: string | undefined;
@@ -138,7 +137,6 @@ describe('/api/chat widget prompt injection', () => {
       'code',
       '',
       'chat',
-      undefined,
       'claude_code',
     );
     let capturedSystemPrompt: string | undefined;

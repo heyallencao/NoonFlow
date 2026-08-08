@@ -13,12 +13,26 @@ interface SessionDetailResponse {
   runtimeState?: unknown;
 }
 
-export function useSessionsQuery(type: SessionListType = 'chat') {
+export function useSessionsQuery(type: SessionListType = 'chat', openedWorkspaces?: readonly string[]) {
+  const workspaces = Array.from(new Set((openedWorkspaces || []).filter(Boolean)));
   return useQuery({
-    queryKey: queryKeys.sessions(type),
-    queryFn: () => fetchJson<SessionsResponse>(`/api/chat/sessions?type=${type}`),
+    queryKey: [...queryKeys.sessions(type), workspaces],
+    queryFn: () => openedWorkspaces
+      ? fetchSessionsForOpenedWorkspaces(type, workspaces)
+      : fetchJson<SessionsResponse>(`/api/chat/sessions?type=${encodeURIComponent(type)}`),
     refetchOnWindowFocus: false,
   });
+}
+
+export function fetchSessionsForOpenedWorkspaces(
+  type: SessionListType,
+  openedWorkspaces: readonly string[],
+) {
+  const workspaces = Array.from(new Set(openedWorkspaces.filter(Boolean)));
+  const params = new URLSearchParams({ type });
+  params.set('openedOnly', '1');
+  for (const workspace of workspaces) params.append('workspace', workspace);
+  return fetchJson<SessionsResponse>(`/api/chat/sessions?${params.toString()}`);
 }
 
 export function useSessionQuery(sessionId: string, enabled: boolean = true) {

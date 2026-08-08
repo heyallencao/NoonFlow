@@ -13,6 +13,7 @@ import {
 } from '@/lib/db';
 import { agentOrchestrator } from '@/lib/agent-runtime/orchestrator';
 import { evaluateCodexResumePatchInvalidation } from '@/lib/codex-resume-contract';
+import { ensureNativeSessionRuntime } from '@/lib/native-session-catalog';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -50,7 +51,7 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const existing = getSession(id);
+    const existing = getSession(id) || ensureNativeSessionRuntime(id);
     if (!existing) {
       return Response.json({ error: 'Session not found' }, { status: 404 });
     }
@@ -69,7 +70,7 @@ export async function PATCH(
 ) {
   try {
     const { id } = await params;
-    const session = getSession(id);
+    const session = getSession(id) || ensureNativeSessionRuntime(id);
     if (!session) {
       return Response.json({ error: 'Session not found' }, { status: 404 });
     }
@@ -173,7 +174,7 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const session = getSession(id);
+    const session = getSession(id) || ensureNativeSessionRuntime(id);
     if (!session) {
       return Response.json({ error: 'Session not found' }, { status: 404 });
     }

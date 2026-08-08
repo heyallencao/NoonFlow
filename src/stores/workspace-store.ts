@@ -1,6 +1,5 @@
 import { create } from 'zustand';
 import {
-  isManagedWorktreeSubPath,
   loadWorkspaceStorageState,
   normalizeWorkspacePath,
   saveHiddenWorkspaces,
@@ -13,7 +12,6 @@ interface WorkspaceStoreState {
   hiddenWorkspaces: string[];
   lastWorkspace: string;
   hydrate: () => void;
-  mergeWorkspacePaths: (paths: Array<string | null | undefined>) => void;
   rememberWorkspace: (path: string) => void;
   removeWorkspace: (path: string) => void;
   setHiddenWorkspaces: (paths: string[]) => void;
@@ -40,22 +38,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
   ...EMPTY_WORKSPACE_STATE,
   hydrate: () => {
     const state = buildInitialState();
-    // Filter out worktree sub-paths that were previously saved as workspaces
-    const cleaned = state.workspacePaths.filter((p) => !isManagedWorktreeSubPath(p));
-    if (cleaned.length !== state.workspacePaths.length) {
-      saveStoredWorkspaces(cleaned);
-    }
-    set({ ...state, workspacePaths: cleaned });
-  },
-  mergeWorkspacePaths: (paths) => {
-    set((state) => ({
-      workspacePaths: saveStoredWorkspaces([
-        ...state.workspacePaths,
-        ...paths.filter((value): value is string =>
-          typeof value === 'string' && value.length > 0 && !isManagedWorktreeSubPath(value)
-        ),
-      ]),
-    }));
+    set(state);
   },
   rememberWorkspace: (path) => {
     const normalized = normalizeWorkspacePath(path);

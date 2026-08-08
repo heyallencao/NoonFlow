@@ -1,12 +1,11 @@
 import { NextRequest } from 'next/server';
 import { streamClaude } from '@/lib/claude-client';
 import { streamCodex } from '@/lib/codex-client';
-import { addMessage, createAssistantPlaceholderMessage, deleteMessageRecord, getAssistantMessageByClientMessageId, getMessages, getSession, MessageIdempotencyConflictError, recordContextBudgetEvent, replaceMessageParts, updateContextBudgetRecoveryMetrics, updateSessionTitle, updateSessionMode, updateSessionModel, updateSessionProvider, updateSessionProviderId, updateSessionAssistantRuntime, updateSessionAssistantRuntimeVersion, getSetting, getProvider, getDefaultProviderId, acquireSessionLock, renewSessionLock, releaseSessionLock, syncSdkTasks, upsertAssistantMessage, upsertMessageParts, upsertSessionRuntimeState, getSessionRuntimeState, upsertUserMessage } from '@/lib/db';
+import { addMessage, createAssistantPlaceholderMessage, deleteMessageRecord, getAssistantMessageByClientMessageId, getMessages, getSession, MessageIdempotencyConflictError, replaceMessageParts, updateSessionTitle, updateSessionMode, updateSessionModel, updateSessionProvider, updateSessionProviderId, updateSessionAssistantRuntime, updateSessionAssistantRuntimeVersion, getSetting, getProvider, getDefaultProviderId, acquireSessionLock, renewSessionLock, releaseSessionLock, syncSdkTasks, upsertAssistantMessage, upsertMessageParts, upsertSessionRuntimeState, getSessionRuntimeState, upsertUserMessage } from '@/lib/db';
 import { sessionStateManager } from '@/lib/session-state-manager';
 import { agentOrchestrator } from '@/lib/agent-runtime/orchestrator';
 import { sdkAdapter } from '@/lib/agent-runtime/sdk-adapter';
 import { getAssistantRuntimeStatus, getAssistantRuntimeVersion, getDefaultAssistantRuntime } from '@/lib/assistant-runtimes';
-import { notifySessionStart, notifySessionComplete, notifySessionError } from '@/lib/telegram-bot';
 import { registerActiveChatRun, unregisterActiveChatRun } from '@/lib/active-chat-run-registry';
 import { buildMessagePartInputs, serializeMessageContentBlocks } from '@/lib/message-content';
 import { persistAssistantTerminalStateDirect } from '@/lib/chat/assistant-terminal-persistence';
@@ -41,7 +40,7 @@ import type {
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { spawnSync } from 'child_process';
+import { ensureNativeSessionRuntime } from '@/lib/native-session-catalog';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -81,238 +80,6 @@ function buildNotificationStatusEvent(
       message,
     }),
   };
-}
-
-function runGitCommand(cwd: string, args: string[]): string | null {
-  try {
-    const result = spawnSync('git', args, {
-      cwd,
-      encoding: 'utf8',
-      maxBuffer: 1024 * 1024,
-    });
-    if (result.status !== 0) {
-      return null;
-    }
-    return typeof result.stdout === 'string' ? result.stdout : '';
-  } catch {
-    return null;
-  }
-}
-
-function parseNumstatOutput(output: string): Map<string, string> {
-  const entries = new Map<string, string>();
-  for (const rawLine of output.split('\n')) {
-    const parts = rawLine.split('\t');
-    if (parts.length < 3) continue;
-    const filePath = parts.slice(2).join('\t').trim();
-    if (!filePath) continue;
-    const additions = parts[0]?.trim() || '0';
-    const deletions = parts[1]?.trim() || '0';
-    entries.set(filePath, `${additions},${deletions}`);
-  }
-  return entries;
-}
-
-function parseNameOnlyOutput(output: string): string[] {
-  return output
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
-}
-
-function captureGitDiffSignature(cwd?: string): Map<string, string> | null {
-  if (!cwd) return null;
-
-  const inRepo = runGitCommand(cwd, ['rev-parse', '--is-inside-work-tree']);
-  if (inRepo?.trim() !== 'true') {
-    return null;
-  }
-
-  const unstagedNumstat = parseNumstatOutput(runGitCommand(cwd, ['diff', '--numstat']) || '');
-  const stagedNumstat = parseNumstatOutput(runGitCommand(cwd, ['diff', '--cached', '--numstat']) || '');
-  const unstagedNames = parseNameOnlyOutput(runGitCommand(cwd, ['diff', '--name-only']) || '');
-  const stagedNames = parseNameOnlyOutput(runGitCommand(cwd, ['diff', '--cached', '--name-only']) || '');
-  const untrackedNames = parseNameOnlyOutput(runGitCommand(cwd, ['ls-files', '--others', '--exclude-standard']) || '');
-
-  const allPaths = new Set<string>([
-    ...unstagedNumstat.keys(),
-    ...stagedNumstat.keys(),
-    ...unstagedNames,
-    ...stagedNames,
-    ...untrackedNames,
-  ]);
-
-  const signature = new Map<string, string>();
-  for (const filePath of allPaths) {
-    const staged = stagedNumstat.get(filePath) || '0,0';
-    const unstaged = unstagedNumstat.get(filePath) || '0,0';
-    const untracked = untrackedNames.includes(filePath) ? '1' : '0';
-    signature.set(filePath, `s:${staged}|u:${unstaged}|n:${untracked}`);
-  }
-
-  return signature;
-}
-
-function diffGitChangedFiles(
-  before: Map<string, string> | null | undefined,
-  after: Map<string, string> | null | undefined,
-): string[] {
-  if (!before || !after) return [];
-  const allPaths = new Set<string>([...before.keys(), ...after.keys()]);
-  const changed: string[] = [];
-  for (const filePath of allPaths) {
-    if ((before.get(filePath) || '') !== (after.get(filePath) || '')) {
-      changed.push(filePath);
-    }
-  }
-  return changed;
-}
-
-function normalizeToolName(name: unknown): string {
-  const raw = typeof name === 'string' ? name.trim().toLowerCase() : '';
-  if (!raw) return '';
-  const segments = raw.split(/[.:/]/).filter(Boolean);
-  return segments[segments.length - 1] || raw;
-}
-
-function isCommandToolName(name: unknown): boolean {
-  const normalized = normalizeToolName(name);
-  return normalized === 'bash'
-    || normalized === 'exec_command'
-    || normalized === 'execute_command'
-    || normalized === 'shell'
-    || normalized === 'run';
-}
-
-interface StructuredToolResultPayload {
-  __noonflow_tool_result?: true;
-  __monolith_tool_result?: true;
-  output?: unknown;
-  changed_files?: unknown;
-}
-
-function mergeChangedFilesIntoResult(content: unknown, changedFiles: string[]): string {
-  const normalizedOutput = typeof content === 'string' ? content : JSON.stringify(content ?? '');
-  const normalizedChangedFiles = Array.from(new Set(changedFiles.map((file) => file.trim()).filter(Boolean)));
-
-  try {
-    const parsed = JSON.parse(normalizedOutput) as StructuredToolResultPayload;
-    if (parsed && (parsed.__noonflow_tool_result === true || parsed.__monolith_tool_result === true)) {
-      const existing = Array.isArray(parsed.changed_files)
-        ? parsed.changed_files.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean)
-        : [];
-      return JSON.stringify({
-        ...parsed,
-        changed_files: Array.from(new Set([...existing, ...normalizedChangedFiles])),
-      });
-    }
-  } catch {
-    // Not structured payload, wrap below.
-  }
-
-  return JSON.stringify({
-    __noonflow_tool_result: true,
-    output: normalizedOutput,
-    changed_files: normalizedChangedFiles,
-  });
-}
-
-function augmentSSEStreamWithCommandFileChanges(
-  stream: ReadableStream<string>,
-  workingDirectory?: string,
-): ReadableStream<string> {
-  if (!workingDirectory) {
-    return stream;
-  }
-
-  return new ReadableStream<string>({
-    start(controller) {
-      const reader = stream.getReader();
-      let buffer = '';
-      const commandToolGitSignaturesByToolUseId = new Map<string, Map<string, string> | null>();
-
-      const processLine = (line: string): string => {
-        if (!line.startsWith('data: ')) {
-          return line;
-        }
-
-        const payload = line.slice(6);
-        try {
-          const event = JSON.parse(payload) as SSEEvent;
-
-          if (event.type === 'tool_use') {
-            try {
-              const toolData = JSON.parse(event.data);
-              const toolUseId = typeof toolData.id === 'string' ? toolData.id : '';
-              if (toolUseId && isCommandToolName(toolData.name)) {
-                commandToolGitSignaturesByToolUseId.set(toolUseId, captureGitDiffSignature(workingDirectory));
-              }
-            } catch {
-              // best effort
-            }
-            return line;
-          }
-
-          if (event.type !== 'tool_result') {
-            return line;
-          }
-
-          const resultData = JSON.parse(event.data);
-          const toolUseId = typeof resultData.tool_use_id === 'string' ? resultData.tool_use_id : '';
-          if (!toolUseId || !commandToolGitSignaturesByToolUseId.has(toolUseId)) {
-            return line;
-          }
-
-          const beforeSignature = commandToolGitSignaturesByToolUseId.get(toolUseId);
-          const afterSignature = captureGitDiffSignature(workingDirectory);
-          const changedFiles = diffGitChangedFiles(beforeSignature, afterSignature);
-          commandToolGitSignaturesByToolUseId.delete(toolUseId);
-          const mergedContent = mergeChangedFilesIntoResult(resultData.content, changedFiles);
-
-          const nextEvent: SSEEvent = {
-            ...event,
-            data: JSON.stringify({
-              ...resultData,
-              content: mergedContent,
-            }),
-          };
-          return `data: ${JSON.stringify(nextEvent)}`;
-        } catch {
-          return line;
-        }
-      };
-
-      const pump = async () => {
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-              if (buffer.length > 0) {
-                controller.enqueue(`${processLine(buffer)}\n`);
-                buffer = '';
-              }
-              controller.close();
-              return;
-            }
-
-            buffer += value;
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-            for (const line of lines) {
-              controller.enqueue(`${processLine(line)}\n`);
-            }
-          }
-        } catch (error) {
-          controller.error(error);
-        }
-      };
-
-      void pump();
-    },
-    cancel(reason) {
-      void stream.cancel(reason);
-    },
-  });
 }
 
 function buildAssistantPersistedAck(
@@ -472,6 +239,7 @@ export async function POST(request: NextRequest) {
       provider_id,
       systemPromptAppend,
       client_message_id,
+      assistant_runtime,
     } = body;
 
     if (!session_id || typeof rawContent !== 'string' || rawContent.trim().length === 0) {
@@ -489,7 +257,7 @@ export async function POST(request: NextRequest) {
     console.log('[chat API] content length:', content.length, 'first 200 chars:', content.slice(0, 200));
     console.log('[chat API] systemPromptAppend:', systemPromptAppend ? `${systemPromptAppend.length} chars` : 'none');
 
-    const session = getSession(session_id);
+    const session = getSession(session_id) || ensureNativeSessionRuntime(session_id, assistant_runtime);
     if (!session) {
       return new Response(JSON.stringify({ error: 'Session not found' }), {
         status: 404,
@@ -558,14 +326,6 @@ export async function POST(request: NextRequest) {
         generationQueue: [],
       });
     };
-
-    // Telegram notification: session started (fire-and-forget)
-    const telegramNotifyOpts = {
-      sessionId: session_id,
-      sessionTitle: session.title !== 'New Chat' ? session.title : content.slice(0, 50),
-      workingDirectory: session.working_directory,
-    };
-    notifySessionStart(telegramNotifyOpts).catch(() => {});
 
     // Save user message — persist file metadata so attachments survive page reload
     const persistedDisplayContent = (
@@ -889,22 +649,6 @@ export async function POST(request: NextRequest) {
       assistant_runtime: effectiveRuntime,
       ...buildContextBudgetLogFields(contextBudget, rawHistoryMsgs.length),
     });
-    let contextBudgetEventId: string | null = null;
-    try {
-      contextBudgetEventId = recordContextBudgetEvent({
-        sessionId: session_id,
-        source: 'ui',
-        assistantRuntime: effectiveRuntime,
-        context: contextBudget,
-        historyBeforeCount: rawHistoryMsgs.length,
-      });
-    } catch (error) {
-      console.warn('[chat API] failed to persist context budget event', {
-        session_id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-
     const preStreamEvents: SSEEvent[] = contextBudget.statusNotice
       ? [buildNotificationStatusEvent(
           contextBudget.statusNotice.title,
@@ -984,21 +728,13 @@ export async function POST(request: NextRequest) {
           toolTimeoutSeconds: toolTimeout || 300,
           provider: resolvedProvider,
           conversationHistory: historyMsgs,
-          onContextBudgetRecovery: contextBudgetEventId
-            ? (metrics) => updateContextBudgetRecoveryMetrics(contextBudgetEventId!, metrics)
-            : undefined,
           onRuntimeStatusChange: (status: string) => {
             try { sessionStateManager.updateSessionState(session_id, { runtimeStatus: status }); } catch { /* best effort */ }
           },
         });
 
-    const streamWithCommandFileChanges = augmentSSEStreamWithCommandFileChanges(
-      stream,
-      effectiveWorkingDirectory,
-    );
-
     // Tee the stream: one for client, one for collecting the response
-    const [streamForClient, streamForCollect] = streamWithCommandFileChanges.tee();
+    const [streamForClient, streamForCollect] = stream.tee();
 
     // Periodically renew the session lock so long-running tasks don't expire
     const lockRenewalInterval = setInterval(() => {
@@ -1038,7 +774,6 @@ export async function POST(request: NextRequest) {
     const persistedAckPromise = collectStreamResponse(
       streamForCollect,
       session_id,
-      telegramNotifyOpts,
       cleanupRun,
       effectiveRuntime !== 'codex' || !systemPromptAppend,
       sanitizedClientMessageId,
@@ -1104,7 +839,6 @@ export async function POST(request: NextRequest) {
 async function collectStreamResponse(
   stream: ReadableStream<string>,
   sessionId: string,
-  telegramOpts: { sessionId?: string; sessionTitle?: string; workingDirectory?: string },
   onComplete?: () => void,
   persistSdkSessionId = true,
   clientMessageId?: string | null,
@@ -1497,18 +1231,6 @@ async function collectStreamResponse(
     await persistAssistantTerminalState('error');
   } finally {
     await checkpointFlusher?.dispose();
-    // Telegram notifications: completion or error (fire-and-forget)
-    if (hasError) {
-      notifySessionError(errorMessage, telegramOpts).catch(() => {});
-    } else {
-      // Extract text summary for the completion notification
-      const textSummary = contentBlocks
-        .filter((b): b is Extract<MessageContentBlock, { type: 'text' }> => b.type === 'text')
-        .map((b) => b.text)
-        .join('')
-        .trim();
-      notifySessionComplete(textSummary || undefined, telegramOpts).catch(() => {});
-    }
     onComplete?.();
   }
 

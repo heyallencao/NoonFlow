@@ -557,35 +557,6 @@ svg.hugeicons rect {
   stroke-width: 1.5;
 }
 
-/* Shared interactive bar chart hover effect */
-.interactive-bar-chart .recharts-bar-rectangle {
-  cursor: pointer;
-}
-
-.interactive-bar-chart .recharts-inactive-bar,
-.interactive-bar-chart .recharts-active-bar {
-  transform-box: fill-box;
-  transform-origin: center center;
-  transition:
-    transform 180ms ease,
-    filter 180ms ease,
-    opacity 180ms ease;
-  will-change: transform, filter;
-}
-
-.interactive-bar-chart .recharts-bar-rectangle:hover .recharts-inactive-bar,
-.interactive-bar-chart .recharts-active-bar {
-  transform: translateY(-4px) scale(1.02);
-  filter: brightness(1.06) saturate(1.04);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .interactive-bar-chart .recharts-inactive-bar,
-  .interactive-bar-chart .recharts-active-bar {
-    transition: none;
-  }
-}
-
 /* Workspace sidebar animations */
 @keyframes slideDown {
   from {

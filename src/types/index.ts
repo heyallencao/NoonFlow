@@ -2,17 +2,6 @@
 // Database Models
 // ==========================================
 
-export interface Worktree {
-  id: string;
-  workspace_path: string;
-  worktree_path: string;
-  branch: string;
-  is_default: boolean;
-  name: string;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface ChatSession {
   id: string;
   title: string;
@@ -22,7 +11,6 @@ export interface ChatSession {
   model: string;
   system_prompt: string;
   working_directory: string;
-  worktree_id: string;
   sdk_session_id: string; // Runtime-managed session/thread ID for resume
   project_name: string;
   status: 'active' | 'archived';
@@ -205,31 +193,10 @@ export interface CreateSessionRequest {
   model?: string;
   system_prompt?: string;
   working_directory?: string;
-  worktree_id?: string;
   mode?: string;
   provider_id?: string;
   assistant_runtime?: AssistantRuntime;
   session_type?: 'chat' | 'terminal';
-}
-
-// ==========================================
-// Worktree API Types
-// ==========================================
-
-export interface CreateWorktreeRequest {
-  workspace_path: string;
-  branch: string;
-  base_branch?: string;
-  name?: string;
-}
-
-export interface WorktreesResponse {
-  worktrees: Worktree[];
-  isGitRepo?: boolean;
-}
-
-export interface WorktreeResponse {
-  worktree: Worktree;
 }
 
 export interface SessionsQueryParams {
@@ -541,7 +508,6 @@ export const SETTING_KEYS = {
   MAX_THINKING_TOKENS: 'max_thinking_tokens',
   CHAT_REASONING_ENABLED: 'chat_reasoning_enabled',
   GENERATIVE_UI_ENABLED: 'generative_ui_enabled',
-  WIDGET_TELEMETRY_THRESHOLDS: 'widget_telemetry_thresholds',
   DEFAULT_ASSISTANT_RUNTIME: 'default_assistant_runtime',
   ASSISTANT_RUNTIME_ENABLED_CLAUDE: 'assistant_runtime_enabled_claude_code',
   ASSISTANT_RUNTIME_ENABLED_CODEX: 'assistant_runtime_enabled_codex',
@@ -782,7 +748,7 @@ export interface SessionStreamSnapshot {
    * @deprecated Legacy fallback only. Terminal content is now derived from
    * streamingContent / streamingBlocks / toolResults preserved in the snapshot.
    * Always `null` for new streams; kept for backward compatibility with older
-   * snapshots that may be recovered from sessionStorage.
+   * snapshots produced by older renderer implementations.
    */
   finalMessageContent: string | null;
 }

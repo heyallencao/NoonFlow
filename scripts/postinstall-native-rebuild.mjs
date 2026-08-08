@@ -11,7 +11,7 @@ function log(message) {
 
 function hasElectronRebuild() {
   try {
-    require.resolve('electron-rebuild/package.json');
+    require.resolve('@electron/rebuild');
     return true;
   } catch {
     return false;

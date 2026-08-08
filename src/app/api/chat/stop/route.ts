@@ -8,6 +8,7 @@ import {
 import { stopActiveChatRun } from '@/lib/active-chat-run-registry';
 import { sessionStateManager } from '@/lib/session-state-manager';
 import { parseDBDate } from '@/lib/utils';
+import { ensureNativeSessionRuntime } from '@/lib/native-session-catalog';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -42,7 +43,7 @@ export async function POST(request: NextRequest) {
       return Response.json({ error: 'session_id is required' }, { status: 400 });
     }
 
-    const session = getSession(sessionId);
+    const session = getSession(sessionId) || ensureNativeSessionRuntime(sessionId);
     if (!session) {
       return Response.json({ error: 'Session not found' }, { status: 404 });
     }

@@ -24,7 +24,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { useTranslation } from "@/hooks/useTranslation";
 
-type InstallTarget = "git" | "claude" | "codex" | "both";
+type InstallTarget = "claude" | "codex" | "both";
 type RuntimeKey = "claude" | "codex";
 
 interface InstallProgress {
@@ -57,8 +57,6 @@ type WizardPhase =
 interface PrereqResult {
   hasNode: boolean;
   nodeVersion?: string;
-  hasGit: boolean;
-  gitVersion?: string;
   hasClaude: boolean;
   claudeVersion?: string;
   hasCodex: boolean;
@@ -112,12 +110,11 @@ export function InstallWizard({
   const { t } = useTranslation();
   const isZh = t("nav.chats") === "对话";
   const isSingleTarget = target !== "both";
-  const includeGit = target === "git";
   const includeClaude = target === "both" || target === "claude";
   const includeCodex = target === "both" || target === "codex";
-  const titleTarget = target === "both" ? "Claude + Codex" : target === "git" ? "Git" : runtimeDisplay(target);
+  const titleTarget = target === "both" ? "Claude + Codex" : runtimeDisplay(target);
   const activeRuntimes = useMemo<RuntimeKey[]>(
-    () => (target === "both" ? ["claude", "codex"] : target === "git" ? [] : [target]),
+    () => (target === "both" ? ["claude", "codex"] : [target]),
     [target],
   );
 
@@ -167,7 +164,6 @@ export function InstallWizard({
 
   const startInstall = useCallback(async (options?: {
     includeNode?: boolean;
-    installGit?: boolean;
     installClaude?: boolean;
     installCodex?: boolean;
     initializeClaude?: boolean;
@@ -219,13 +215,6 @@ export function InstallWizard({
 
       const nextLogs: string[] = [];
       nextLogs.push(result.hasNode ? `Node.js ${result.nodeVersion} found.` : "Node.js not found.");
-      if (includeGit) {
-        nextLogs.push(
-          result.hasGit
-            ? `Git ${result.gitVersion ?? "installed"} detected.`
-            : "Git not detected.",
-        );
-      }
       for (const runtime of activeRuntimes) {
         const installed = isRuntimeInstalled(result, runtime);
         const initialized = isRuntimeInitialized(result, runtime);
@@ -240,8 +229,7 @@ export function InstallWizard({
       }
       setLogs((prev) => [...prev, ...nextLogs]);
 
-      const allInstalled = (includeGit ? result.hasGit : true)
-        && activeRuntimes.every((runtime) => isRuntimeInstalled(result, runtime));
+      const allInstalled = activeRuntimes.every((runtime) => isRuntimeInstalled(result, runtime));
       const allInitialized = activeRuntimes.every((runtime) => isRuntimeInitialized(result, runtime));
       if (allInstalled && allInitialized) {
         setPhase("already-installed");
@@ -254,17 +242,16 @@ export function InstallWizard({
       const msg = err instanceof Error ? err.message : String(err);
       setLogs((prev) => [...prev, `Error checking prerequisites: ${msg}`]);
     }
-  }, [activeRuntimes, includeGit, isRuntimeInitialized, isRuntimeInstalled, runtimeVersion]);
+  }, [activeRuntimes, isRuntimeInitialized, isRuntimeInstalled, runtimeVersion]);
 
   const handleConfirmInstall = useCallback(() => {
     if (!prereqs) return;
 
-    const canInstallGit = includeGit && !prereqs.hasGit;
     const canInstallClaude = activeRuntimes.includes("claude") ? installClaude : false;
     const canInstallCodex = activeRuntimes.includes("codex") ? installCodex : false;
     const canInitClaude = activeRuntimes.includes("claude") && initializeClaude && (canInstallClaude || prereqs.hasClaude);
     const canInitCodex = activeRuntimes.includes("codex") && initializeCodex && (canInstallCodex || prereqs.hasCodex);
-    const hasAnyAction = canInstallGit || canInstallClaude || canInstallCodex || canInitClaude || canInitCodex;
+    const hasAnyAction = canInstallClaude || canInstallCodex || canInitClaude || canInitCodex;
 
     if (!hasAnyAction) {
       setLogs((prev) => [...prev, "Select at least one install/init action to continue."]);
@@ -274,13 +261,12 @@ export function InstallWizard({
     const needsNode = !prereqs.hasNode && (canInstallClaude || canInstallCodex);
     startInstall({
       includeNode: needsNode,
-      installGit: canInstallGit,
       installClaude: canInstallClaude,
       installCodex: canInstallCodex,
       initializeClaude: canInitClaude,
       initializeCodex: canInitCodex,
     });
-  }, [activeRuntimes, includeGit, initializeClaude, initializeCodex, installClaude, installCodex, prereqs, startInstall]);
+  }, [activeRuntimes, initializeClaude, initializeCodex, installClaude, installCodex, prereqs, startInstall]);
 
   const handleCopyLogs = useCallback(async () => {
     try {
@@ -331,12 +317,11 @@ export function InstallWizard({
 
   const steps = progress?.steps ?? [];
   const needsNodeInstall = Boolean(prereqs && !prereqs.hasNode && ((includeClaude && installClaude) || (includeCodex && installCodex)));
-  const needsGitInstall = Boolean(prereqs && includeGit && !prereqs.hasGit);
   const requiresManualPackageManager = Boolean(
     prereqs
       && prereqs.platform === "darwin"
       && !prereqs.hasHomebrew
-      && (needsNodeInstall || needsGitInstall),
+      && needsNodeInstall,
   );
 
   return (
@@ -347,18 +332,10 @@ export function InstallWizard({
           <DialogDescription>
             {phase === "confirm"
               ? isSingleTarget
-                ? (
-                    target === "git"
-                      ? (isZh ? "准备一键安装 Git。" : "One-click install Git.")
-                      : (isZh ? `准备一键安装并初始化 ${titleTarget} 环境。` : `One-click install and initialize ${titleTarget}.`)
-                  )
+                ? (isZh ? `准备一键安装并初始化 ${titleTarget} 环境。` : `One-click install and initialize ${titleTarget}.`)
                 : "Configure one-click install and initialization for Claude and Codex."
               : isSingleTarget
-                ? (
-                    target === "git"
-                      ? (isZh ? "自动安装 Git" : "Automatically install Git")
-                      : (isZh ? `自动安装并初始化 ${titleTarget} 环境` : `Automatically install and initialize ${titleTarget} environment`)
-                  )
+                ? (isZh ? `自动安装并初始化 ${titleTarget} 环境` : `Automatically install and initialize ${titleTarget} environment`)
                 : "Automatically install and initialize Claude and Codex environments"}
           </DialogDescription>
         </DialogHeader>
@@ -444,15 +421,8 @@ export function InstallWizard({
                   </p>
                 ) : prereqs?.hasNode ? (
                   <p className="text-emerald-700 dark:text-emerald-400">Node.js {prereqs.nodeVersion} — found</p>
-                ) : (
-                  <p className="text-muted-foreground">Node.js — optional for Git-only setup</p>
-                )}
+                ) : null}
 
-                {includeGit && (
-                  <p className={prereqs?.hasGit ? "text-emerald-700 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400"}>
-                    Git — {prereqs?.hasGit ? `installed (${prereqs.gitVersion ?? "unknown version"})` : "not found"}
-                  </p>
-                )}
 
                 {activeRuntimes.includes("claude") && (
                   <>
@@ -542,7 +512,7 @@ export function InstallWizard({
                 </div>
               )}
 
-              {prereqs && isSingleTarget && target !== "git" && (
+              {prereqs && isSingleTarget && (
                 <p className="text-xs text-muted-foreground">
                   {isZh
                     ? `安装后若未检测到认证信息，请执行 ${runtimeLoginCommand(activeRuntimes[0])}`
@@ -558,11 +528,9 @@ export function InstallWizard({
               <div className="text-sm">
                 <p className="font-medium text-emerald-700 dark:text-emerald-400">Already installed</p>
                 <p className="text-muted-foreground text-xs">
-                  {target === "git"
-                    ? (isZh ? "Git 已安装。" : "Git is already installed.")
-                    : (isZh
-                      ? `${titleTarget} 已安装并完成初始化`
-                      : `${titleTarget} is already installed and initialized.`)}
+                  {isZh
+                    ? `${titleTarget} 已安装并完成初始化`
+                    : `${titleTarget} is already installed and initialized.`}
                 </p>
               </div>
             </div>
@@ -575,13 +543,9 @@ export function InstallWizard({
                 <p className="font-medium text-emerald-700 dark:text-emerald-400">{t("install.complete")}</p>
                 <p className="text-muted-foreground text-xs">
                   {isSingleTarget
-                    ? (
-                        target === "git"
-                          ? (isZh ? "Git 已安装完成。" : "Git was installed successfully.")
-                          : (isZh
-                            ? `${titleTarget} 已安装并初始化完成。`
-                            : `${titleTarget} was installed and initialized successfully.`)
-                      )
+                    ? (isZh
+                      ? `${titleTarget} 已安装并初始化完成。`
+                      : `${titleTarget} was installed and initialized successfully.`)
                     : "Selected runtimes were installed and initialized successfully."}
                 </p>
               </div>
