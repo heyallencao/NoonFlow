@@ -1,4 +1,4 @@
-import type { SSEEvent, TokenUsage } from '@/types';
+import type { SSEEvent } from '@/types';
 
 export interface CodexThreadEvent {
   type: string;
@@ -8,43 +8,6 @@ export interface CodexThreadEvent {
 interface CodexThreadStartedEvent extends CodexThreadEvent {
   type: 'thread.started';
   thread_id?: unknown;
-}
-
-interface CodexTurnCompletedEvent extends CodexThreadEvent {
-  type: 'turn.completed';
-  usage?: unknown;
-}
-
-const CONVERSATION_EVENT_TYPES = new Set([
-  'thread.started',
-  'turn.started',
-  'turn.completed',
-  'turn.failed',
-  'item.started',
-  'item.updated',
-  'item.completed',
-]);
-
-export function isCodexConversationEventType(eventType: string): boolean {
-  return CONVERSATION_EVENT_TYPES.has(eventType);
-}
-
-export function toCodexTokenUsage(value: unknown): TokenUsage | null {
-  if (!value || typeof value !== 'object') {
-    return null;
-  }
-
-  const usage = value as {
-    input_tokens?: number;
-    cached_input_tokens?: number;
-    output_tokens?: number;
-  };
-
-  return {
-    input_tokens: usage.input_tokens ?? 0,
-    output_tokens: usage.output_tokens ?? 0,
-    cache_read_input_tokens: usage.cached_input_tokens ?? 0,
-  };
 }
 
 export function appendCodexDelta(previous: string, next: string): string {
@@ -83,18 +46,6 @@ export function buildCodexThreadStartedStatusEvent(
       session_id: threadId,
       ...(model ? { model } : {}),
     }),
-  };
-}
-
-export function buildCodexTurnCompletedResultEvent(event: CodexThreadEvent): SSEEvent | null {
-  if (event.type !== 'turn.completed') {
-    return null;
-  }
-
-  const turnCompleted = event as CodexTurnCompletedEvent;
-  return {
-    type: 'result',
-    data: JSON.stringify({ usage: toCodexTokenUsage(turnCompleted.usage) }),
   };
 }
 

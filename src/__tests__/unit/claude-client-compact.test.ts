@@ -6,6 +6,7 @@ import path from 'node:path';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'monolith-claude-compact-'));
 const claudeCliFixture = path.join(tmpDir, 'bin', 'claude');
+const originalClaudeCompactionTimeoutMs = process.env.NOONFLOW_CLAUDE_COMPACTION_TIMEOUT_MS;
 process.env.CLAUDE_GUI_DATA_DIR = tmpDir;
 fs.closeSync(fs.openSync(path.join(tmpDir, 'monolith.db'), 'w'));
 fs.mkdirSync(path.dirname(claudeCliFixture), { recursive: true });
@@ -45,6 +46,11 @@ async function readStringStream(stream: ReadableStream<string>): Promise<string>
 afterEach(() => {
   __setClaudeQueryForTests(null);
   __setClaudePathResolverForTests(null);
+  if (originalClaudeCompactionTimeoutMs === undefined) {
+    delete process.env.NOONFLOW_CLAUDE_COMPACTION_TIMEOUT_MS;
+  } else {
+    process.env.NOONFLOW_CLAUDE_COMPACTION_TIMEOUT_MS = originalClaudeCompactionTimeoutMs;
+  }
   closeDb();
 });
 
@@ -57,6 +63,7 @@ describe('streamClaude official compact recovery', () => {
     const calls: Array<{ prompt: string; resume?: string }> = [];
     const executablePaths: string[] = [];
     const recoverySnapshots: Array<import('../../types').ContextBudgetRecoveryMetrics> = [];
+    const nativeUsageCalls: string[] = [];
     let resumedPromptAttempts = 0;
 
     __setClaudePathResolverForTests(() => claudeCliFixture);
@@ -68,7 +75,7 @@ describe('streamClaude official compact recovery', () => {
         executablePaths.push(input.options.pathToClaudeCodeExecutable);
       }
 
-      return (async function* () {
+      const mockedQuery = (async function* () {
         if (resume === 'sdk-resume-1' && promptValue === 'Continue working') {
           resumedPromptAttempts += 1;
           if (resumedPromptAttempts === 1) {
@@ -144,18 +151,28 @@ describe('streamClaude official compact recovery', () => {
           } as never;
           yield {
             type: 'system',
+            subtype: 'status',
+            status: 'compacting',
+            permissionMode: 'acceptEdits',
+            uuid: 'status-2',
+            session_id: 'sdk-resume-1',
+          } as never;
+          yield {
+            type: 'system',
             subtype: 'compact_boundary',
             compact_metadata: {
               trigger: 'manual',
               pre_tokens: 321,
+              post_tokens: 123,
+              duration_ms: 12,
             },
             uuid: 'compact-1',
             session_id: 'sdk-resume-1',
           } as never;
           yield {
             type: 'result',
-            subtype: 'success',
-            is_error: false,
+            subtype: 'error_during_execution',
+            is_error: true,
             num_turns: 1,
             duration_ms: 12,
             usage: {
@@ -166,13 +183,32 @@ describe('streamClaude official compact recovery', () => {
             },
             total_cost_usd: 0,
             session_id: 'sdk-resume-1',
-            result: '/compact completed',
+            result: 'late result error after compact boundary',
           } as never;
           return;
         }
 
         throw new Error(`Unexpected query invocation: prompt=${promptValue}, resume=${resume ?? 'none'}`);
-      })() as ReturnType<typeof import('@anthropic-ai/claude-agent-sdk').query>;
+      })();
+      Object.defineProperty(mockedQuery, 'getContextUsage', {
+        value: async () => {
+          nativeUsageCalls.push(promptValue);
+          return {
+            totalTokens: promptValue === '/compact' ? 123 : 140,
+            maxTokens: 1_000,
+            contextWindow: {
+              systemPrompt: 10,
+              systemTools: 10,
+              mcpTools: 0,
+              memoryFiles: 0,
+              skills: 0,
+              messages: promptValue === '/compact' ? 103 : 120,
+              autocompactBuffer: 0,
+            },
+          };
+        },
+      });
+      return mockedQuery as ReturnType<typeof import('@anthropic-ai/claude-agent-sdk').query>;
     });
 
     const payload = await readStringStream(streamClaude({
@@ -209,5 +245,233 @@ describe('streamClaude official compact recovery', () => {
     assert.equal(lastRecovery?.compactRetrySuccess, true);
     assert.equal(typeof lastRecovery?.recoveryDurationMs, 'number');
     assert.ok((lastRecovery?.recoveryDurationMs ?? -1) >= 0);
+
+    assert.deepEqual(nativeUsageCalls, ['/compact', 'Continue working', 'Continue working']);
+    const { getRuntimeContextState } = await import('../../lib/context-runtime');
+    const state = getRuntimeContextState('session-1');
+    assert.equal(state?.source, 'native');
+    assert.deepEqual(state?.currentContext, {
+      usedTokens: 140,
+      contextWindowTokens: 1_000,
+      percentage: 14,
+    });
+    assert.deepEqual(state?.lastTurnUsage, {
+      input_tokens: 10,
+      output_tokens: 12,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cost_usd: 0.01,
+    });
+    assert.equal(state?.compaction.status, 'completed');
+    assert.equal(state?.compaction.trigger, 'recovery');
+    assert.equal(state?.compaction.preTokens, 321);
+    assert.equal(state?.compaction.postTokens, 123);
+    assert.equal(state?.compaction.postTokensEstimated, false);
+    assert.equal(typeof state?.compaction.startedAt, 'number');
+    assert.equal(typeof state?.compaction.completedAt, 'number');
+    assert.equal(state?.compaction.error, null);
+  });
+
+  it('times out a compact stream that stops emitting and continues through the fresh-session fallback', { timeout: 1_000 }, async () => {
+    process.env.NOONFLOW_CLAUDE_COMPACTION_TIMEOUT_MS = '30';
+    const calls: Array<{ prompt: string; resume?: string }> = [];
+    let compactCloseCalls = 0;
+
+    __setClaudePathResolverForTests(() => claudeCliFixture);
+    __setClaudeQueryForTests((input) => {
+      const promptValue = typeof input.prompt === 'string' ? input.prompt : '[non-string-prompt]';
+      const resume = input.options?.resume;
+      calls.push({ prompt: promptValue, resume });
+
+      const mockedQuery = (async function* () {
+        if (resume === 'sdk-hang-1' && promptValue === 'Continue after timeout') {
+          throw new Error('Input exceeds the maximum length of 1048576 characters');
+        }
+        if (resume === 'sdk-hang-1' && promptValue === '/compact') {
+          yield {
+            type: 'system',
+            subtype: 'status',
+            status: 'compacting',
+            uuid: 'compact-hang-status',
+            session_id: 'sdk-hang-1',
+          } as never;
+          await new Promise<void>(() => {});
+          return;
+        }
+        if (!resume && promptValue === 'Continue after timeout') {
+          yield {
+            type: 'system',
+            subtype: 'init',
+            session_id: 'sdk-fresh-1',
+            model: 'claude-sonnet',
+            tools: [],
+          } as never;
+          yield {
+            type: 'result',
+            subtype: 'success',
+            is_error: false,
+            num_turns: 1,
+            duration_ms: 5,
+            usage: {
+              input_tokens: 4,
+              output_tokens: 2,
+              cache_read_input_tokens: 0,
+              cache_creation_input_tokens: 0,
+            },
+            total_cost_usd: 0,
+            session_id: 'sdk-fresh-1',
+            result: 'fresh fallback completed',
+          } as never;
+          return;
+        }
+        throw new Error(`Unexpected query invocation: prompt=${promptValue}, resume=${resume ?? 'none'}`);
+      })();
+      Object.defineProperty(mockedQuery, 'close', {
+        value: () => {
+          if (promptValue === '/compact') compactCloseCalls += 1;
+        },
+      });
+      Object.defineProperty(mockedQuery, 'getContextUsage', {
+        value: async () => ({
+          totalTokens: 6,
+          maxTokens: 1_000,
+          contextWindow: {
+            systemPrompt: 0,
+            systemTools: 0,
+            mcpTools: 0,
+            memoryFiles: 0,
+            skills: 0,
+            messages: 6,
+            autocompactBuffer: 0,
+          },
+        }),
+      });
+      return mockedQuery as ReturnType<typeof import('@anthropic-ai/claude-agent-sdk').query>;
+    });
+
+    const payload = await readStringStream(streamClaude({
+      prompt: 'Continue after timeout',
+      sessionId: 'session-compact-hang',
+      sdkSessionId: 'sdk-hang-1',
+    }));
+
+    assert.deepEqual(calls, [
+      { prompt: 'Continue after timeout', resume: 'sdk-hang-1' },
+      { prompt: '/compact', resume: 'sdk-hang-1' },
+      { prompt: 'Continue after timeout', resume: undefined },
+    ]);
+    assert.equal(compactCloseCalls, 1);
+    assert.match(payload, /Session fallback/);
+    assert.equal(parseSSEEvents(payload).some((event) => event.type === 'error'), false);
+    const { getRuntimeContextState } = await import('../../lib/context-runtime');
+    const state = getRuntimeContextState('session-compact-hang');
+    assert.equal(state?.compaction.status, 'failed');
+    assert.match(state?.compaction.error ?? '', /timed out after 30ms/);
+    assert.equal(state?.compaction.postTokens, null);
+  });
+
+  it('keeps compact_boundary authoritative and invalidates stale usage when refresh fails', async () => {
+    let usageCalls = 0;
+    __setClaudePathResolverForTests(() => claudeCliFixture);
+    __setClaudeQueryForTests(() => {
+      const mockedQuery = (async function* () {
+        yield {
+          type: 'system',
+          subtype: 'init',
+          session_id: 'sdk-auto-1',
+          model: 'claude-sonnet',
+          tools: [],
+        } as never;
+        yield {
+          type: 'system',
+          subtype: 'status',
+          status: 'compacting',
+          uuid: 'auto-status-1',
+          session_id: 'sdk-auto-1',
+        } as never;
+        yield {
+          type: 'system',
+          subtype: 'status',
+          status: 'compacting',
+          uuid: 'auto-status-2',
+          session_id: 'sdk-auto-1',
+        } as never;
+        yield {
+          type: 'system',
+          subtype: 'compact_boundary',
+          compact_metadata: {
+            trigger: 'auto',
+            pre_tokens: 800,
+            post_tokens: 100,
+            duration_ms: 25,
+          },
+          uuid: 'auto-boundary-1',
+          session_id: 'sdk-auto-1',
+        } as never;
+        yield {
+          type: 'system',
+          subtype: 'status',
+          status: null,
+          compact_result: 'failed',
+          compact_error: 'late failure after boundary',
+          uuid: 'auto-status-3',
+          session_id: 'sdk-auto-1',
+        } as never;
+        yield {
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          num_turns: 1,
+          duration_ms: 20,
+          usage: {
+            input_tokens: 8,
+            output_tokens: 2,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+          total_cost_usd: 0,
+          session_id: 'sdk-auto-1',
+          result: 'done',
+        } as never;
+      })();
+      Object.defineProperty(mockedQuery, 'getContextUsage', {
+        value: async () => {
+          usageCalls += 1;
+          if (usageCalls > 1) throw new Error('native usage refresh failed');
+          return {
+            totalTokens: 800,
+            maxTokens: 1_000,
+            contextWindow: {
+              systemPrompt: 0,
+              systemTools: 0,
+              mcpTools: 0,
+              memoryFiles: 0,
+              skills: 0,
+              messages: 800,
+              autocompactBuffer: 0,
+            },
+          };
+        },
+      });
+      return mockedQuery as ReturnType<typeof import('@anthropic-ai/claude-agent-sdk').query>;
+    });
+
+    const payload = await readStringStream(streamClaude({
+      prompt: 'auto compact',
+      sessionId: 'session-auto',
+    }));
+    assert.equal(parseSSEEvents(payload).some((event) => event.type === 'error'), false);
+
+    const { getRuntimeContextState } = await import('../../lib/context-runtime');
+    const state = getRuntimeContextState('session-auto');
+    assert.equal(state?.source, 'unavailable');
+    assert.equal(state?.currentContext, null);
+    assert.equal(state?.compaction.status, 'completed');
+    assert.equal(state?.compaction.trigger, 'auto');
+    assert.equal(state?.compaction.preTokens, 800);
+    assert.equal(state?.compaction.postTokens, 100);
+    assert.equal(state?.compaction.postTokensEstimated, false);
+    assert.equal(state?.compaction.error, null);
+    assert.ok((state?.compaction.startedAt ?? Infinity) <= (state?.compaction.completedAt ?? -Infinity));
   });
 });

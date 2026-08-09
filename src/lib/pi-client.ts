@@ -9,7 +9,19 @@ import { getSetting } from '@/lib/db-session';
 import { getShellEnvironment } from '@/lib/environment';
 import { splitPiModelSelection } from '@/lib/pi-model-selection';
 import { findPiBinary, getExpandedPath } from '@/lib/platform';
-import type { FileAttachment, PiStreamOptions, SSEEvent, TokenUsage } from '@/types';
+import {
+  createUnavailableRuntimeContextState,
+  getRuntimeContextState,
+  setRuntimeContextState,
+  updateRuntimeContextState,
+} from '@/lib/context-runtime';
+import type {
+  FileAttachment,
+  PiStreamOptions,
+  RuntimeCompactionTrigger,
+  SSEEvent,
+  TokenUsage,
+} from '@/types';
 
 type PiRpcRecord = {
   id?: unknown;
@@ -49,6 +61,19 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function asFiniteNumber(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function asOptionalNonNegativeNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(0, value)
+    : null;
+}
+
+function piCompactionTrigger(reason: unknown): RuntimeCompactionTrigger | null {
+  if (reason === 'threshold') return 'auto';
+  if (reason === 'overflow') return 'recovery';
+  if (reason === 'manual') return 'manual';
+  return null;
 }
 
 function extractTextContent(value: unknown): string {
@@ -148,6 +173,10 @@ export function streamPi(options: PiStreamOptions): ReadableStream<string> {
 
   return new ReadableStream<string>({
     async start(controller) {
+      setRuntimeContextState(
+        options.sessionId,
+        createUnavailableRuntimeContextState('pi'),
+      );
       const binary = piClientPlatform.findPiBinary();
       if (!binary) {
         controller.enqueue(formatSSE({ type: 'error', data: 'Pi CLI is not installed' }));
@@ -189,11 +218,90 @@ export function streamPi(options: PiStreamOptions): ReadableStream<string> {
         usage.cost = { total: asFiniteNumber(usage.cost?.total) + asFiniteNumber(next.cost?.total) };
       };
 
+      const beginNativeCompaction = (reason: unknown) => {
+        const previous = getRuntimeContextState(options.sessionId);
+        const activeCompaction = previous?.compaction.status === 'compacting'
+          ? previous.compaction
+          : null;
+        updateRuntimeContextState(options.sessionId, 'pi', {
+          compaction: {
+            status: 'compacting',
+            trigger: piCompactionTrigger(reason),
+            preTokens: null,
+            postTokens: null,
+            postTokensEstimated: false,
+            startedAt: activeCompaction?.startedAt ?? Date.now(),
+            completedAt: null,
+            error: null,
+          },
+        });
+      };
+
+      const endNativeCompaction = (record: PiRpcRecord) => {
+        const completedAt = Date.now();
+        const previous = getRuntimeContextState(options.sessionId);
+        const activeCompaction = previous?.compaction.status === 'compacting'
+          ? previous.compaction
+          : null;
+        const result = asRecord(record.result);
+        const tokensBefore = asOptionalNonNegativeNumber(result?.tokensBefore);
+        const estimatedTokensAfter = asOptionalNonNegativeNumber(result?.estimatedTokensAfter);
+        const nativeError = typeof record.errorMessage === 'string' && record.errorMessage.trim()
+          ? record.errorMessage.trim()
+          : typeof record.error === 'string' && record.error.trim()
+            ? record.error.trim()
+            : null;
+        const trigger = piCompactionTrigger(record.reason) ?? activeCompaction?.trigger ?? null;
+        const failure = record.aborted === true
+          ? 'Pi native compaction aborted'
+          : nativeError
+            ?? (!result
+              ? 'Pi native compaction ended without a result'
+              : tokensBefore === null
+                ? 'Pi native compaction result is missing tokensBefore'
+                : trigger === null
+                  ? 'Pi native compaction ended without a recognized reason'
+                  : null);
+        const startedAt = activeCompaction?.startedAt ?? completedAt;
+
+        if (failure || trigger === null) {
+          updateRuntimeContextState(options.sessionId, 'pi', {
+            compaction: {
+              status: 'failed',
+              trigger,
+              preTokens: tokensBefore ?? activeCompaction?.preTokens ?? null,
+              postTokens: null,
+              postTokensEstimated: false,
+              startedAt,
+              completedAt,
+              error: failure ?? 'Pi native compaction ended without a recognized reason',
+            },
+          });
+          return;
+        }
+
+        updateRuntimeContextState(options.sessionId, 'pi', {
+          compaction: {
+            status: 'completed',
+            trigger,
+            preTokens: tokensBefore,
+            postTokens: estimatedTokensAfter,
+            postTokensEstimated: estimatedTokensAfter !== null,
+            startedAt,
+            completedAt,
+            error: null,
+          },
+        });
+      };
+
       const send = (child: ChildProcessWithoutNullStreams, command: Record<string, unknown>) => {
         child.stdin.write(`${JSON.stringify(command)}\n`);
       };
 
-      const startAttempt = async (resumeSessionId?: string): Promise<void> => {
+      const startAttempt = async (
+        resumeSessionId?: string,
+        freshConversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>,
+      ): Promise<void> => {
         const args = ['--mode', 'rpc'];
         if (resumeSessionId) args.push('--session', resumeSessionId);
         const piModelSelection = splitPiModelSelection(options.model);
@@ -247,8 +355,8 @@ export function streamPi(options: PiStreamOptions): ReadableStream<string> {
         let settled = false;
 
         const history = resumeSessionId
-          ? options.conversationHistory
-          : (options.fallbackConversationHistory || options.conversationHistory);
+          ? undefined
+          : freshConversationHistory ?? options.conversationHistory;
         const message = buildPiPrompt(options.prompt, history, options.files, cwd);
         const images = buildPiImages(options.files);
 
@@ -312,6 +420,9 @@ export function streamPi(options: PiStreamOptions): ReadableStream<string> {
             const messageRecord = asRecord(record.message);
             if (messageRecord?.role === 'assistant') {
               addUsage(messageRecord.usage);
+              updateRuntimeContextState(options.sessionId, 'pi', {
+                lastTurnUsage: toTokenUsage(usage),
+              });
               if (messageRecord.stopReason === 'error') {
                 const errorText = typeof messageRecord.errorMessage === 'string' && messageRecord.errorMessage.trim()
                   ? messageRecord.errorMessage
@@ -345,7 +456,6 @@ export function streamPi(options: PiStreamOptions): ReadableStream<string> {
           if (type === 'tool_execution_end') {
             const id = typeof record.toolCallId === 'string' ? record.toolCallId : '';
             const result = asRecord(record.result);
-            addUsage(result?.usage);
             if (id) {
               emit({
                 type: 'tool_result',
@@ -359,7 +469,12 @@ export function streamPi(options: PiStreamOptions): ReadableStream<string> {
             return;
           }
           if (type === 'compaction_start') {
+            beginNativeCompaction(record.reason);
             emit({ type: 'status', data: 'Pi is compacting the session...' });
+            return;
+          }
+          if (type === 'compaction_end') {
+            endNativeCompaction(record);
             return;
           }
           if (type === 'auto_retry_start') {
@@ -404,9 +519,12 @@ export function streamPi(options: PiStreamOptions): ReadableStream<string> {
           if (resumeSessionId && !promptAccepted && isPiSessionResolutionError(detail)) {
             options.onSessionIdInvalidated?.();
             emit({ type: 'status', data: JSON.stringify({ notification: true, title: 'Pi session reset', message: 'Previous Pi session could not be resumed. Starting a fresh conversation.' }) });
-            void startAttempt().catch((error: unknown) => {
-              finish(error instanceof Error ? error.message : String(error));
-            });
+            const reason = `native_resume_failed:${detail || 'pi_session_resolution_error'}`;
+            void Promise.resolve(options.loadEmergencyConversationHistory?.(reason))
+              .then((history) => startAttempt(undefined, history ?? []))
+              .catch((error: unknown) => {
+                finish(error instanceof Error ? error.message : String(error));
+              });
             return;
           }
           finish(detail || `Pi exited before the turn settled (code ${code ?? 'unknown'})`);

@@ -1,19 +1,18 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import {
   appendCodexDelta,
   buildCodexThreadStartedStatusEvent,
-  buildCodexTurnCompletedResultEvent,
   extractCodexItemEnvelope,
-  isCodexConversationEventType,
 } from '../../lib/codex/event-mapper';
 
 describe('codex event mapper', () => {
-  it('identifies conversation event types', () => {
-    assert.equal(isCodexConversationEventType('thread.started'), true);
-    assert.equal(isCodexConversationEventType('item.updated'), true);
-    assert.equal(isCodexConversationEventType('error'), false);
+  it('does not turn unrelated notifications into thread status events', () => {
+    assert.equal(buildCodexThreadStartedStatusEvent({ type: 'turn.completed' }), null);
+    assert.equal(buildCodexThreadStartedStatusEvent({ type: 'error' }), null);
   });
 
   it('builds thread started status payload with optional model', () => {
@@ -29,20 +28,9 @@ describe('codex event mapper', () => {
     assert.equal(payload.model, 'gpt-5.4');
   });
 
-  it('builds turn completed result payload and normalizes missing token fields', () => {
-    const resultEvent = buildCodexTurnCompletedResultEvent({
-      type: 'turn.completed',
-      usage: { input_tokens: 7, output_tokens: 3 },
-    });
-
-    assert.ok(resultEvent);
-    assert.equal(resultEvent?.type, 'result');
-    const payload = JSON.parse(resultEvent?.data || '{}') as {
-      usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number };
-    };
-    assert.equal(payload.usage?.input_tokens, 7);
-    assert.equal(payload.usage?.output_tokens, 3);
-    assert.equal(payload.usage?.cache_read_input_tokens, 0);
+  it('contains no old turn-usage normalizer that can add cached input twice', () => {
+    const source = fs.readFileSync(path.resolve('src/lib/codex/event-mapper.ts'), 'utf8');
+    assert.doesNotMatch(source, /cached_input_tokens|cache_read_input_tokens|turn\.completed/);
   });
 
   it('extracts item envelope from nested details or top-level item payload', () => {

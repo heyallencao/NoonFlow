@@ -1,40 +1,35 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import os from 'os';
 import path from 'node:path';
-import { getExpandedPath, findCodexBinary } from './platform';
+import { getExpandedPath, findCodexBinary, getCodexVersion } from './platform';
 import { getShellEnvironment } from './environment';
 import { CODEX_AUTH_MODE_KEY, inferAssistantAuthMode } from './assistant-auth';
 import { getSetting } from './db';
 import { isDangerouslySkipPermissionsEnabled } from './assistant-permissions';
 import { resolvePreferredCodexModel } from './codex-model';
-import { getCodexBackend } from './codex-backend';
 import {
   appendCodexDelta,
   buildCodexThreadStartedStatusEvent,
-  buildCodexTurnCompletedResultEvent,
   extractCodexItemEnvelope,
-  isCodexConversationEventType,
 } from './codex/event-mapper';
-import { buildLegacyCodexArgs, type CodexCliReasoningEffort } from './codex/legacy-cli';
+import {
+  CodexAppServerClient,
+  type AppServerNotification,
+  type AppServerRequest,
+} from './codex/app-server';
+import { isCliVersionAtLeast } from './context-cli-version';
 import { normalizeContextLimitErrorMessage } from './context-budget';
-import type { FileAttachment, SSEEvent } from '@/types';
+import {
+  buildNativeTokenState,
+  createUnavailableRuntimeContextState,
+  getRuntimeContextState,
+  setRuntimeContextState,
+  updateRuntimeContextState,
+} from './context-runtime';
+import { registerPendingPermission } from './permission-registry';
+import type { FileAttachment, SSEEvent, TokenUsage } from '@/types';
 import { SETTING_KEYS } from '@/types';
-
-type CodexConfigValue = string | number | boolean | CodexConfigValue[] | CodexConfigObject;
-
-interface CodexConfigObject {
-  [key: string]: CodexConfigValue;
-}
-
-interface CodexOptions {
-  codexPathOverride?: string;
-  baseUrl?: string;
-  apiKey?: string;
-  config?: CodexConfigObject;
-  env?: Record<string, string>;
-}
 
 const WINDOWS_CODEX_TARGETS: Partial<Record<NodeJS.Architecture, {
   packageName: string;
@@ -59,7 +54,7 @@ interface WindowsCodexNativePackage {
   managedBy: CodexManagedPackageManager;
 }
 
-interface CodexSdkLaunchConfig {
+interface CodexAppServerLaunchConfig {
   executablePath: string;
   env: NodeJS.ProcessEnv;
 }
@@ -218,12 +213,12 @@ function prependCodexPathDirs(
   return result;
 }
 
-function resolveCodexSdkLaunch(
+function resolveCodexAppServerLaunch(
   binary: string,
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform = process.platform,
   architecture: NodeJS.Architecture = process.arch,
-): CodexSdkLaunchConfig {
+): CodexAppServerLaunchConfig {
   if (platform !== 'win32' || !/\.(?:cmd|bat)$/i.test(binary)) {
     return { executablePath: binary, env };
   }
@@ -247,69 +242,13 @@ function resolveCodexSdkLaunch(
   );
 }
 
-export function __resolveCodexSdkLaunchForTests(
+export function __resolveCodexAppServerLaunchForTests(
   binary: string,
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
   architecture: NodeJS.Architecture,
-): CodexSdkLaunchConfig {
-  return resolveCodexSdkLaunch(binary, env, platform, architecture);
-}
-
-type CodexApprovalMode = 'never' | 'on-request' | 'on-failure' | 'untrusted';
-type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
-type ModelReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
-
-interface ThreadOptions {
-  model?: string;
-  sandboxMode?: CodexSandboxMode;
-  workingDirectory?: string;
-  skipGitRepoCheck?: boolean;
-  modelReasoningEffort?: ModelReasoningEffort;
-  networkAccessEnabled?: boolean;
-  approvalPolicy?: CodexApprovalMode;
-  additionalDirectories?: string[];
-}
-
-type UserInput =
-  | { type: 'text'; text: string }
-  | { type: 'local_image'; path: string };
-
-type ThreadEvent =
-  | { type: 'thread.started'; thread_id: string }
-  | { type: 'turn.started' }
-  | { type: 'turn.completed'; usage: { input_tokens: number; cached_input_tokens: number; output_tokens: number } }
-  | { type: 'turn.failed'; error: { message: string } }
-  | { type: 'item.started' | 'item.updated' | 'item.completed'; item: Record<string, unknown> }
-  | { type: 'error'; message: string };
-
-interface CodexThreadHandle {
-  runStreamed(
-    input: string | UserInput[],
-    options?: { signal?: AbortSignal },
-  ): Promise<{ events: AsyncGenerator<ThreadEvent> }>;
-}
-
-interface CodexClientInstance {
-  startThread(options?: ThreadOptions): CodexThreadHandle;
-  resumeThread(id: string, options?: ThreadOptions): CodexThreadHandle;
-}
-
-let codexCtorPromise: Promise<new (options?: CodexOptions) => CodexClientInstance> | null = null;
-
-export function __setCodexCtorForTests(
-  ctor: (new (options?: CodexOptions) => CodexClientInstance) | null,
-): void {
-  codexCtorPromise = ctor ? Promise.resolve(ctor) : null;
-}
-
-async function loadCodexCtor(): Promise<new (options?: CodexOptions) => CodexClientInstance> {
-  if (!codexCtorPromise) {
-    codexCtorPromise = import('@openai/codex-sdk').then(
-      (module) => module.Codex as new (options?: CodexOptions) => CodexClientInstance,
-    );
-  }
-  return codexCtorPromise;
+): CodexAppServerLaunchConfig {
+  return resolveCodexAppServerLaunch(binary, env, platform, architecture);
 }
 
 interface CodexStreamOptions {
@@ -323,6 +262,9 @@ interface CodexStreamOptions {
   permissionMode?: string;
   files?: FileAttachment[];
   conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  loadEmergencyConversationHistory?: (
+    reason: string,
+  ) => Array<{ role: 'user' | 'assistant'; content: string }> | Promise<Array<{ role: 'user' | 'assistant'; content: string }>>;
   onSessionIdInvalidated?: () => void;
   onRuntimeStatusChange?: (status: string) => void;
 }
@@ -333,25 +275,22 @@ interface CodexClientSettings {
   baseUrl?: string;
 }
 
-interface CodexSdkRuntimeConfig {
-  clientOptions: CodexOptions;
-  threadOptions: ThreadOptions;
-  input: string | UserInput[];
-}
-
 interface CodexAttemptState {
   resumeSessionId?: string;
   sawConversationEvent: boolean;
-  deferredErrorMessage: string | null;
   nonTerminalErrorMessage: string | null;
 }
 
-interface CodexThreadEvent {
-  type: string;
-  [key: string]: unknown;
-}
+type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+const MIN_CODEX_APP_SERVER_VERSION = '0.145.0';
+const COMPACTION_COMPLETION_TIMEOUT_MS = 60_000;
 
-type CodexReasoningEffort = CodexCliReasoningEffort;
+function compactionCompletionTimeoutMs(): number {
+  const override = Number.parseInt(process.env.NOONFLOW_CODEX_COMPACTION_TIMEOUT_MS ?? '', 10);
+  return Number.isFinite(override) && override > 0
+    ? override
+    : COMPACTION_COMPLETION_TIMEOUT_MS;
+}
 
 const CODEX_CLI_SUPPORTED_IMAGE_MIME_TYPES = new Set([
   'image/jpeg',
@@ -515,154 +454,137 @@ async function buildCodexClientSettings(): Promise<CodexClientSettings> {
   };
 }
 
-function safeJsonParse(value: string): CodexThreadEvent | null {
-  try {
-    return JSON.parse(value) as CodexThreadEvent;
-  } catch {
-    return null;
-  }
-}
-
 function isInvalidStreamState(error: unknown): boolean {
   return error instanceof TypeError && /Invalid state/.test(error.message);
 }
 
-function terminateCodexProcess(child: ChildProcessWithoutNullStreams) {
-  if (child.killed) {
-    return;
-  }
-
-  if (process.platform === 'win32') {
-    child.kill('SIGTERM');
-    return;
-  }
-
-  try {
-    process.kill(-child.pid!, 'SIGTERM');
-  } catch {
-    child.kill('SIGTERM');
-  }
-
-  setTimeout(() => {
-    if (child.exitCode !== null || child.killed) {
-      return;
-    }
-    try {
-      process.kill(-child.pid!, 'SIGKILL');
-    } catch {
-      child.kill('SIGKILL');
-    }
-  }, 1500);
-}
-
-function getSdkThreadOptions(params: {
+function getAppServerThreadOptions(params: {
   cwd: string;
   permissionMode?: string;
   skipPermissions: boolean;
   resolvedModel?: string;
-  resolvedReasoningEffort?: CodexReasoningEffort;
-}): ThreadOptions {
+  systemPrompt?: string;
+}): Record<string, unknown> {
   const {
     cwd,
     permissionMode,
     skipPermissions,
     resolvedModel,
-    resolvedReasoningEffort,
+    systemPrompt,
   } = params;
-  const threadOptions: ThreadOptions = {
-    workingDirectory: cwd,
-    skipGitRepoCheck: true,
-    approvalPolicy: 'never',
+  const threadOptions: Record<string, unknown> = {
+    cwd,
+    approvalPolicy: skipPermissions ? 'never' : 'on-request',
+    sandbox: permissionMode === 'plan'
+      ? 'read-only'
+      : skipPermissions
+        ? 'danger-full-access'
+        : 'workspace-write',
   };
-
-  if (resolvedModel) {
-    threadOptions.model = resolvedModel;
-  }
-  if (resolvedReasoningEffort) {
-    threadOptions.modelReasoningEffort = resolvedReasoningEffort as ModelReasoningEffort;
-  }
-
-  if (permissionMode === 'plan') {
-    threadOptions.sandboxMode = 'read-only';
-    threadOptions.networkAccessEnabled = false;
-    return threadOptions;
-  }
-
-  if (skipPermissions) {
-    threadOptions.sandboxMode = 'danger-full-access';
-    return threadOptions;
-  }
-
-  threadOptions.sandboxMode = 'workspace-write';
-  threadOptions.networkAccessEnabled = true;
+  if (resolvedModel) threadOptions.model = resolvedModel;
+  if (systemPrompt?.trim()) threadOptions.developerInstructions = systemPrompt.trim();
   return threadOptions;
 }
 
-function buildSdkRuntimeConfig(params: {
-  binary: string;
-  settings: CodexClientSettings;
-  cwd: string;
-  permissionMode?: string;
-  skipPermissions: boolean;
-  resolvedModel?: string;
-  resolvedReasoningEffort?: CodexReasoningEffort;
+function buildAppServerInput(params: {
   prompt: string;
-  systemPrompt?: string;
   files?: FileAttachment[];
   conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
-  imagePaths: string[];
-  resumeSessionId?: string;
-}): CodexSdkRuntimeConfig {
-  const {
-    binary,
-    settings,
-    cwd,
-    permissionMode,
-    skipPermissions,
-    resolvedModel,
-    resolvedReasoningEffort,
-    prompt,
-    systemPrompt,
-    files,
-    conversationHistory,
-    imagePaths,
-    resumeSessionId,
-  } = params;
+  includeEmergencyContext: boolean;
+}): Array<Record<string, unknown>> {
+  const textReferencedFiles = (params.files ?? []).filter((file) => (
+    !(file.filePath && file.type.startsWith('image/') && isCodexCliSupportedImageAttachment(file))
+  ));
+  const promptText = params.includeEmergencyContext
+    ? buildCodexPrompt(params.prompt, {
+        history: params.conversationHistory,
+        files: textReferencedFiles,
+      })
+    : buildCodexPrompt(params.prompt, { files: textReferencedFiles });
+  const input: Array<Record<string, unknown>> = [
+    { type: 'text', text: promptText, text_elements: [] },
+  ];
+  for (const file of params.files ?? []) {
+    if (file.filePath && file.type.startsWith('image/') && isCodexCliSupportedImageAttachment(file)) {
+      input.push({ type: 'localImage', path: file.filePath });
+    }
+  }
+  return input;
+}
 
-  const promptText = resumeSessionId
-    ? buildCodexPrompt(prompt, { files })
-    : buildCodexPrompt(prompt, {
-        history: conversationHistory,
-        systemPrompt,
-        files,
-      });
+interface AppServerTokenBreakdown {
+  totalTokens?: number;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  cacheWriteInputTokens?: number;
+  outputTokens?: number;
+}
 
-  const input = imagePaths.length > 0
-    ? [
-        { type: 'text', text: promptText } satisfies UserInput,
-        ...imagePaths.map((path) => ({ type: 'local_image', path }) satisfies UserInput),
-      ]
-    : promptText;
+function nonNegativeNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0;
+}
 
-  const clientOptions: CodexOptions = {
-    env: settings.env as Record<string, string>,
-    apiKey: settings.apiKey,
-    baseUrl: settings.baseUrl,
-  };
-
-  clientOptions.codexPathOverride = binary;
-
+export function normalizeCodexAppServerTurnUsage(value: unknown): TokenUsage {
+  const usage = value && typeof value === 'object'
+    ? value as AppServerTokenBreakdown
+    : {};
+  const cachedInput = nonNegativeNumber(usage.cachedInputTokens);
+  const cacheWriteInput = nonNegativeNumber(usage.cacheWriteInputTokens);
+  const nativeInput = nonNegativeNumber(usage.inputTokens);
   return {
-    clientOptions,
-    threadOptions: getSdkThreadOptions({
-      cwd,
-      permissionMode,
-      skipPermissions,
-      resolvedModel,
-      resolvedReasoningEffort,
-    }),
-    input,
+    // Native inputTokens includes both cache subsets. The shared TokenUsage shape
+    // is additive, so store only the uncached remainder here exactly once.
+    input_tokens: Math.max(0, nativeInput - cachedInput - cacheWriteInput),
+    output_tokens: nonNegativeNumber(usage.outputTokens),
+    cache_read_input_tokens: cachedInput,
+    cache_creation_input_tokens: cacheWriteInput,
   };
+}
+
+function normalizeAppServerItem(item: Record<string, unknown>): Record<string, unknown> {
+  const typeMap: Record<string, string> = {
+    agentMessage: 'agent_message',
+    reasoning: 'reasoning',
+    commandExecution: 'command_execution',
+    fileChange: 'file_change',
+    mcpToolCall: 'mcp_tool_call',
+    contextCompaction: 'context_compaction',
+  };
+  const type = typeof item.type === 'string' ? typeMap[item.type] ?? item.type : '';
+  if (type === 'reasoning') {
+    const summary = Array.isArray(item.summary)
+      ? item.summary.filter((part): part is string => typeof part === 'string')
+      : [];
+    const content = Array.isArray(item.content)
+      ? item.content.filter((part): part is string => typeof part === 'string')
+      : [];
+    return { ...item, type, text: [...summary, ...content].join('\n') };
+  }
+  return {
+    ...item,
+    type,
+    aggregated_output: item.aggregatedOutput,
+    exit_code: item.exitCode,
+  };
+}
+
+function appServerThreadId(result: unknown): string | null {
+  if (!result || typeof result !== 'object') return null;
+  const thread = (result as { thread?: unknown }).thread;
+  if (!thread || typeof thread !== 'object') return null;
+  const id = (thread as { id?: unknown }).id;
+  return typeof id === 'string' && id.length > 0 ? id : null;
+}
+
+function isContextWindowExceededTurn(turn: unknown): boolean {
+  if (!turn || typeof turn !== 'object') return false;
+  const error = (turn as { error?: unknown }).error;
+  if (!error || typeof error !== 'object') return false;
+  const info = (error as { codexErrorInfo?: unknown }).codexErrorInfo;
+  const message = String((error as { message?: unknown }).message ?? '');
+  return info === 'contextWindowExceeded'
+    || info === 'ContextWindowExceeded'
+    || /ContextWindowExceeded|context window exceeded/i.test(message);
 }
 
 function formatCodexErrorMessage(error: unknown, resolvedModel?: string): string {
@@ -689,19 +611,19 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
     permissionMode,
     files,
     conversationHistory,
+    loadEmergencyConversationHistory,
     onSessionIdInvalidated,
     onRuntimeStatusChange,
   } = options;
 
   const streamAbortController = abortController ?? new AbortController();
-  let currentChild: ChildProcessWithoutNullStreams | null = null;
+  let currentAppServer: CodexAppServerClient | null = null;
 
   return new ReadableStream<string>({
     start(controller) {
       let streamClosed = false;
       let doneEmitted = false;
       let fallbackAttempted = false;
-      let currentAbortHandler: (() => void) | null = null;
       const reasoningById = new Map<string, string>();
       const agentMessageById = new Map<string, string>();
       const emittedAgentMessageTextById = new Map<string, string>();
@@ -709,7 +631,14 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
       const toolStarted = new Set<string>();
       let pendingFinalAgentMessage: { id: string; text: string } | null = null;
       let emittedCommentaryCount = 0;
+      let emergencyConversationHistory = conversationHistory;
       const reasoningEnabled = getSetting(SETTING_KEYS.CHAT_REASONING_ENABLED) === 'true';
+      setRuntimeContextState(sessionId, createUnavailableRuntimeContextState('codex'));
+
+      const ensureEmergencyHistory = async (reason: string) => {
+        if (emergencyConversationHistory?.length || !loadEmergencyConversationHistory) return;
+        emergencyConversationHistory = await loadEmergencyConversationHistory(reason);
+      };
 
       const emitEvent = (event: SSEEvent) => {
         if (streamClosed) {
@@ -804,62 +733,15 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
       };
 
       const handleThreadEvent = (
-        event: ThreadEvent | CodexThreadEvent,
+        event: {
+          type: 'item.started' | 'item.updated' | 'item.completed';
+          item: Record<string, unknown>;
+        },
         attemptState: CodexAttemptState,
-        resolvedModel?: string,
-        statusModel?: string,
       ) => {
-        if (isCodexConversationEventType(event.type)) {
-          attemptState.sawConversationEvent = true;
-        }
+        attemptState.sawConversationEvent = true;
 
         switch (event.type) {
-          case 'thread.started': {
-            const statusEvent = buildCodexThreadStartedStatusEvent(event, statusModel || resolvedModel);
-            if (statusEvent) {
-              emitEvent(statusEvent);
-            }
-            return;
-          }
-          case 'turn.started':
-            emitEvent({ type: 'status', data: 'Codex is working...' });
-            return;
-          case 'turn.completed':
-            flushPendingAgentMessageAsText();
-            {
-              const resultEvent = buildCodexTurnCompletedResultEvent(event);
-              if (resultEvent) {
-                emitEvent(resultEvent);
-              }
-            }
-            emitDone();
-            return;
-          case 'turn.failed':
-            flushPendingAgentMessageAsCommentary();
-            emitEvent({
-              type: 'error',
-              data: (event.error && typeof event.error === 'object' && 'message' in event.error)
-                ? normalizeContextLimitErrorMessage(String(event.error.message))
-                : 'Codex turn failed',
-            });
-            emitDone();
-            return;
-          case 'error':
-            if (attemptState.resumeSessionId && !attemptState.sawConversationEvent) {
-              attemptState.deferredErrorMessage = typeof event.message === 'string'
-                ? event.message
-                : 'Codex error';
-              return;
-            }
-            flushPendingAgentMessageAsCommentary();
-            emitEvent({
-              type: 'error',
-              data: typeof event.message === 'string'
-                ? normalizeContextLimitErrorMessage(event.message)
-                : 'Codex error',
-            });
-            emitDone();
-            return;
           case 'item.started':
           case 'item.updated':
           case 'item.completed': {
@@ -1033,6 +915,9 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
         if (canFallback) {
           fallbackAttempted = true;
           onSessionIdInvalidated?.();
+          await ensureEmergencyHistory(
+            error instanceof Error ? `native_resume_failed:${error.message}` : 'native_resume_failed',
+          );
           // Reset accumulator state so the fresh attempt starts clean
           reasoningById.clear();
           agentMessageById.clear();
@@ -1050,161 +935,14 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
           flushPendingAgentMessageAsCommentary();
           emitEvent({
             type: 'error',
-            data: attemptState.deferredErrorMessage || formatCodexErrorMessage(error, resolvedModel),
+            data: formatCodexErrorMessage(error, resolvedModel),
           });
           emitDone();
         }
         finalizeAttempt();
       };
 
-      const maybeHandleDeferredResumeFailure = async (
-        attemptState: CodexAttemptState,
-        resolvedModel?: string,
-      ): Promise<boolean> => {
-        if (!attemptState.resumeSessionId || attemptState.sawConversationEvent || !attemptState.deferredErrorMessage) {
-          return false;
-        }
-
-        await handleAttemptFailure(
-          new Error(attemptState.deferredErrorMessage),
-          attemptState,
-          resolvedModel,
-        );
-        return true;
-      };
-
-      const runLegacyAttempt = (
-        params: {
-          resumeSessionId?: string;
-          binary: string;
-          cwd: string;
-          env: NodeJS.ProcessEnv;
-          skipPermissions: boolean;
-          resolvedModel?: string;
-          statusModel?: string;
-          resolvedReasoningEffort?: CodexReasoningEffort;
-          imagePaths: string[];
-        },
-      ) => {
-        const {
-          resumeSessionId,
-          binary,
-          cwd,
-          env,
-          skipPermissions,
-          resolvedModel,
-          statusModel,
-          resolvedReasoningEffort,
-          imagePaths,
-        } = params;
-        const attemptState: CodexAttemptState = {
-          resumeSessionId,
-          sawConversationEvent: false,
-          deferredErrorMessage: null,
-          nonTerminalErrorMessage: null,
-        };
-        let stdoutBuffer = '';
-        let stderrBuffer = '';
-
-        const flushStdout = () => {
-          let newlineIndex = stdoutBuffer.indexOf('\n');
-          while (newlineIndex >= 0) {
-            const line = stdoutBuffer.slice(0, newlineIndex).trim();
-            stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
-            if (line) {
-              const parsed = safeJsonParse(line);
-              if (parsed) {
-                handleThreadEvent(parsed, attemptState, resolvedModel, statusModel);
-              }
-            }
-            newlineIndex = stdoutBuffer.indexOf('\n');
-          }
-        };
-
-        const attemptPrompt = resumeSessionId
-          ? buildCodexPrompt(prompt, { files })
-          : buildCodexPrompt(prompt, {
-              history: conversationHistory,
-              systemPrompt,
-              files,
-            });
-        const args = buildLegacyCodexArgs({
-          cwd,
-          prompt: attemptPrompt,
-          permissionMode,
-          skipPermissions,
-          resolvedModel,
-          resolvedReasoningEffort,
-          imagePaths,
-          resumeSessionId,
-        });
-
-        const child: ChildProcessWithoutNullStreams = spawn(binary, args, {
-          cwd,
-          detached: process.platform !== 'win32',
-          env,
-          stdio: ['pipe', 'pipe', 'pipe'] as const,
-        });
-        currentChild = child;
-        child.stdin.end();
-
-        child.stdout.setEncoding('utf8');
-        child.stdout.on('data', (chunk: string) => {
-          stdoutBuffer += chunk;
-          flushStdout();
-        });
-
-        child.stderr.setEncoding('utf8');
-        child.stderr.on('data', (chunk: string) => {
-          stderrBuffer += chunk;
-        });
-
-        child.on('error', async (error: Error) => {
-          await handleAttemptFailure(error, attemptState, resolvedModel);
-        });
-
-        const handleAbort = () => {
-          terminateCodexProcess(child);
-        };
-        currentAbortHandler = handleAbort;
-        streamAbortController.signal.addEventListener('abort', handleAbort, { once: true });
-
-        child.on('close', async (code: number | null) => {
-          if (currentAbortHandler === handleAbort) {
-            streamAbortController.signal.removeEventListener('abort', handleAbort);
-            currentAbortHandler = null;
-          }
-
-          currentChild = null;
-
-          if (!doneEmitted) {
-            const remaining = stdoutBuffer.trim();
-            if (remaining) {
-              const parsed = safeJsonParse(remaining);
-              if (parsed) {
-                handleThreadEvent(parsed, attemptState, resolvedModel, statusModel);
-              }
-            }
-          }
-
-          if (await maybeHandleDeferredResumeFailure(attemptState, resolvedModel)) {
-            return;
-          }
-
-          const stderrText = stderrBuffer.trim();
-          await handleAttemptFailure(
-            stderrText
-              || attemptState.nonTerminalErrorMessage
-              || (code === 0
-                ? 'Codex stream ended before turn completion'
-                : `Codex exited with code ${code ?? 'unknown'}`),
-            attemptState,
-            resolvedModel,
-          );
-        });
-      };
-
-      const runSdkAttempt = async (
+      const runAppServerAttempt = async (
         params: {
           resumeSessionId?: string;
           binary: string;
@@ -1214,7 +952,6 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
           resolvedModel?: string;
           statusModel?: string;
           resolvedReasoningEffort?: CodexReasoningEffort;
-          imagePaths: string[];
         },
       ) => {
         const {
@@ -1226,66 +963,509 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
           resolvedModel,
           statusModel,
           resolvedReasoningEffort,
-          imagePaths,
         } = params;
         const attemptState: CodexAttemptState = {
           resumeSessionId,
           sawConversationEvent: false,
-          deferredErrorMessage: null,
           nonTerminalErrorMessage: null,
+        };
+        const completedTurns = new Map<string, Record<string, unknown>>();
+        const emittedThreadIds = new Set<string>();
+        let expectedTurnId: string | null = null;
+        let resolveTurn: ((turn: Record<string, unknown>) => void) | null = null;
+        let rejectTurn: ((error: Error) => void) | null = null;
+        let activeThreadId: string | null = null;
+        let latestTurnUsage: TokenUsage | null = null;
+        let appServer: CodexAppServerClient | null = null;
+        let abortHandler: (() => void) | null = null;
+        let resolveCompaction: (() => void) | null = null;
+        let rejectCompaction: ((error: Error) => void) | null = null;
+        let compactionTimer: ReturnType<typeof setTimeout> | null = null;
+        let recoveryCompactionAttempted = false;
+        let recoveryCompactionCompleted = false;
+        let compactionCycleActive = false;
+        let awaitingPostCompactionUsageTurnId: string | null = null;
+        const contextUsageByTurnId = new Map<string, ReturnType<typeof buildNativeTokenState>>();
+        const contextUsageBeforeTurnId = new Map<string, ReturnType<typeof buildNativeTokenState>>();
+
+        const emitThreadStarted = (threadId: string) => {
+          if (emittedThreadIds.has(threadId)) return;
+          emittedThreadIds.add(threadId);
+          const statusEvent = buildCodexThreadStartedStatusEvent(
+            { type: 'thread.started', thread_id: threadId },
+            statusModel || resolvedModel,
+          );
+          if (statusEvent) emitEvent(statusEvent);
+        };
+
+        const completeTurn = (turn: Record<string, unknown>) => {
+          const turnId = typeof turn.id === 'string' ? turn.id : '';
+          if (!turnId) return;
+          if (turnId === expectedTurnId && resolveTurn) {
+            const resolve = resolveTurn;
+            resolveTurn = null;
+            rejectTurn = null;
+            expectedTurnId = null;
+            resolve(turn);
+            return;
+          }
+          completedTurns.set(turnId, turn);
+        };
+
+        const waitForTurn = (turnId: string): Promise<Record<string, unknown>> => {
+          const completed = completedTurns.get(turnId);
+          if (completed) {
+            completedTurns.delete(turnId);
+            return Promise.resolve(completed);
+          }
+          expectedTurnId = turnId;
+          return new Promise<Record<string, unknown>>((resolve, reject) => {
+            resolveTurn = resolve;
+            rejectTurn = reject;
+          });
+        };
+
+        const handleNotification = (notification: AppServerNotification) => {
+          const notificationParams = notification.params ?? {};
+          switch (notification.method) {
+            case 'thread/started': {
+              const thread = notificationParams.thread;
+              if (thread && typeof thread === 'object') {
+                const threadId = (thread as { id?: unknown }).id;
+                if (typeof threadId === 'string') emitThreadStarted(threadId);
+              }
+              return;
+            }
+            case 'turn/started':
+              attemptState.sawConversationEvent = true;
+              emitEvent({ type: 'status', data: 'Codex is working...' });
+              return;
+            case 'turn/completed': {
+              const turn = notificationParams.turn;
+              if (turn && typeof turn === 'object') completeTurn(turn as Record<string, unknown>);
+              return;
+            }
+            case 'thread/tokenUsage/updated': {
+              const usageTurnId = typeof notificationParams.turnId === 'string'
+                ? notificationParams.turnId
+                : null;
+              const tokenUsage = notificationParams.tokenUsage as {
+                total?: AppServerTokenBreakdown;
+                last?: AppServerTokenBreakdown;
+                modelContextWindow?: number | null;
+              } | undefined;
+              if (!tokenUsage?.last) return;
+              latestTurnUsage = normalizeCodexAppServerTurnUsage(tokenUsage.last);
+              const currentContext = buildNativeTokenState(
+                // App-server `total` is cumulative thread usage. `last.totalTokens`
+                // is the native token count for the latest model-visible context.
+                nonNegativeNumber(tokenUsage.last.totalTokens),
+                typeof tokenUsage.modelContextWindow === 'number'
+                  ? tokenUsage.modelContextWindow
+                  : null,
+              );
+              if (usageTurnId) {
+                const previousContext = getRuntimeContextState(sessionId)?.currentContext;
+                if (previousContext && !contextUsageBeforeTurnId.has(usageTurnId)) {
+                  contextUsageBeforeTurnId.set(usageTurnId, previousContext);
+                }
+                contextUsageByTurnId.set(usageTurnId, currentContext);
+              }
+              const isPostCompactionUsage = Boolean(
+                usageTurnId
+                && awaitingPostCompactionUsageTurnId === usageTurnId,
+              );
+              const stateBeforeUsageUpdate = getRuntimeContextState(sessionId);
+              const completedCompaction = isPostCompactionUsage
+                && stateBeforeUsageUpdate?.compaction.status === 'completed'
+                ? stateBeforeUsageUpdate.compaction
+                : null;
+              updateRuntimeContextState(sessionId, 'codex', {
+                currentContext,
+                lastTurnUsage: latestTurnUsage,
+                source: 'native',
+                ...(completedCompaction
+                  ? { compaction: { ...completedCompaction, postTokens: currentContext.usedTokens } }
+                  : {}),
+              });
+              if (isPostCompactionUsage && usageTurnId) {
+                awaitingPostCompactionUsageTurnId = null;
+                contextUsageByTurnId.delete(usageTurnId);
+              }
+              return;
+            }
+            case 'item/agentMessage/delta': {
+              const itemId = typeof notificationParams.itemId === 'string' ? notificationParams.itemId : '';
+              const delta = typeof notificationParams.delta === 'string' ? notificationParams.delta : '';
+              if (!itemId || !delta) return;
+              const next = `${agentMessageById.get(itemId) ?? ''}${delta}`;
+              agentMessageById.set(itemId, next);
+              emittedAgentMessageTextById.set(itemId, next);
+              emitEvent({ type: 'text', data: delta });
+              return;
+            }
+            case 'item/reasoning/summaryTextDelta':
+            case 'item/reasoning/textDelta': {
+              if (!reasoningEnabled) return;
+              const itemId = typeof notificationParams.itemId === 'string' ? notificationParams.itemId : '';
+              const delta = typeof notificationParams.delta === 'string' ? notificationParams.delta : '';
+              if (!itemId || !delta) return;
+              reasoningById.set(itemId, `${reasoningById.get(itemId) ?? ''}${delta}`);
+              emitEvent({ type: 'reasoning', data: delta });
+              return;
+            }
+            case 'item/commandExecution/outputDelta': {
+              const itemId = typeof notificationParams.itemId === 'string' ? notificationParams.itemId : '';
+              const delta = typeof notificationParams.delta === 'string' ? notificationParams.delta : '';
+              if (!itemId || !delta) return;
+              commandOutputById.set(itemId, `${commandOutputById.get(itemId) ?? ''}${delta}`);
+              emitEvent({ type: 'tool_output', data: delta });
+              return;
+            }
+            case 'item/started':
+            case 'item/completed': {
+              const item = notificationParams.item;
+              if (!item || typeof item !== 'object') return;
+              const rawItem = item as Record<string, unknown>;
+              if (rawItem.type === 'contextCompaction') {
+                const compactionTurnId = typeof notificationParams.turnId === 'string'
+                  ? notificationParams.turnId
+                  : null;
+                if (notification.method === 'item/started') {
+                  const previousState = getRuntimeContextState(sessionId);
+                  const activeCompaction = compactionCycleActive
+                    && previousState?.compaction.status === 'compacting'
+                    ? previousState.compaction
+                    : null;
+                  compactionCycleActive = true;
+                  const nativeStartedAt = typeof notificationParams.startedAtMs === 'number'
+                    && Number.isFinite(notificationParams.startedAtMs)
+                    ? notificationParams.startedAtMs
+                    : Date.now();
+                  updateRuntimeContextState(sessionId, 'codex', {
+                    compaction: {
+                      status: 'compacting',
+                      trigger: recoveryCompactionAttempted ? 'recovery' : 'auto',
+                      startedAt: nativeStartedAt,
+                      completedAt: null,
+                      preTokens: activeCompaction
+                        ? activeCompaction.preTokens
+                        : compactionTurnId
+                          ? contextUsageBeforeTurnId.get(compactionTurnId)?.usedTokens
+                            ?? previousState?.currentContext?.usedTokens
+                            ?? null
+                          : previousState?.currentContext?.usedTokens ?? null,
+                      postTokens: null,
+                      postTokensEstimated: false,
+                      error: null,
+                    },
+                  });
+                  emitEvent({
+                    type: 'status',
+                    data: JSON.stringify({
+                      notification: true,
+                      title: '正在压缩上下文',
+                      message: 'Codex 正在执行原生上下文压缩。',
+                    }),
+                  });
+                } else {
+                  const nativeCompletedAt = typeof notificationParams.completedAtMs === 'number'
+                    && Number.isFinite(notificationParams.completedAtMs)
+                    ? notificationParams.completedAtMs
+                    : Date.now();
+                  const cachedPostCompactionUsage = compactionTurnId
+                    ? contextUsageByTurnId.get(compactionTurnId)
+                    : undefined;
+                  const previousState = getRuntimeContextState(sessionId);
+                  const activeCompaction = compactionCycleActive
+                    && previousState?.compaction.status === 'compacting'
+                    ? previousState.compaction
+                    : null;
+                  updateRuntimeContextState(sessionId, 'codex', {
+                    compaction: {
+                      status: 'completed',
+                      trigger: recoveryCompactionAttempted ? 'recovery' : 'auto',
+                      startedAt: activeCompaction?.startedAt ?? nativeCompletedAt,
+                      preTokens: activeCompaction?.preTokens ?? null,
+                      postTokens: cachedPostCompactionUsage?.usedTokens ?? null,
+                      postTokensEstimated: false,
+                      completedAt: nativeCompletedAt,
+                      error: null,
+                    },
+                  });
+                  compactionCycleActive = false;
+                  if (recoveryCompactionAttempted) recoveryCompactionCompleted = true;
+                  awaitingPostCompactionUsageTurnId = cachedPostCompactionUsage
+                    ? null
+                    : compactionTurnId;
+                  if (cachedPostCompactionUsage && compactionTurnId) {
+                    contextUsageByTurnId.delete(compactionTurnId);
+                  }
+                  if (compactionTurnId) contextUsageBeforeTurnId.delete(compactionTurnId);
+                  emitEvent({
+                    type: 'status',
+                    data: JSON.stringify({
+                      notification: true,
+                      title: '上下文压缩完成',
+                      message: 'Codex 原生上下文压缩已完成。',
+                    }),
+                  });
+                  const resolve = resolveCompaction;
+                  resolveCompaction = null;
+                  rejectCompaction = null;
+                  if (compactionTimer) clearTimeout(compactionTimer);
+                  compactionTimer = null;
+                  resolve?.();
+                }
+                return;
+              }
+              handleThreadEvent({
+                type: notification.method === 'item/started' ? 'item.started' : 'item.completed',
+                item: { ...rawItem, details: normalizeAppServerItem(rawItem) },
+              }, attemptState);
+              return;
+            }
+            case 'thread/compacted':
+              // Deprecated protocol notification: never proves compaction completion.
+              return;
+            case 'error': {
+              const error = notificationParams.error;
+              attemptState.nonTerminalErrorMessage = error && typeof error === 'object' && 'message' in error
+                ? String((error as { message?: unknown }).message ?? 'Codex app-server error')
+                : String(notificationParams.message ?? 'Codex app-server error');
+              return;
+            }
+            default:
+              return;
+          }
+        };
+
+        const handleServerRequest = async (request: AppServerRequest): Promise<unknown> => {
+          const supported = request.method === 'item/commandExecution/requestApproval'
+            || request.method === 'item/fileChange/requestApproval';
+          if (!supported) throw new Error(`Unsupported Codex app-server request: ${request.method}`);
+          const requestParams = request.params ?? {};
+          const permissionRequestId = `codex-${String(request.id)}-${Date.now()}`;
+          const itemId = typeof requestParams.itemId === 'string'
+            ? requestParams.itemId
+            : permissionRequestId;
+          const commandRequest = request.method === 'item/commandExecution/requestApproval';
+          const toolName = commandRequest ? 'exec_command' : 'apply_patch';
+          const toolInput = commandRequest
+            ? { command: requestParams.command, cwd: requestParams.cwd }
+            : { grantRoot: requestParams.grantRoot, reason: requestParams.reason };
+          emitEvent({
+            type: 'permission_request',
+            data: JSON.stringify({
+              permissionRequestId,
+              toolName,
+              toolInput,
+              decisionReason: typeof requestParams.reason === 'string' ? requestParams.reason : undefined,
+              toolUseId: itemId,
+            }),
+          });
+          onRuntimeStatusChange?.('waiting_permission');
+          const result = await registerPendingPermission(
+            permissionRequestId,
+            toolInput,
+            streamAbortController.signal,
+          );
+          onRuntimeStatusChange?.('running');
+          return { decision: result.behavior === 'allow' ? 'accept' : 'decline' };
         };
 
         try {
-          const sdkLaunch = resolveCodexSdkLaunch(binary, settings.env);
-          const runtimeConfig = buildSdkRuntimeConfig({
-            binary: sdkLaunch.executablePath,
-            settings: {
-              ...settings,
-              env: sdkLaunch.env,
-            },
+          const launch = resolveCodexAppServerLaunch(binary, settings.env);
+          appServer = new CodexAppServerClient({
+            executablePath: launch.executablePath,
             cwd,
-            skipPermissions,
+            env: launch.env,
+            onNotification: handleNotification,
+            onServerRequest: handleServerRequest,
+            onFatalError: (error) => {
+              rejectTurn?.(error);
+              rejectCompaction?.(error);
+            },
+          });
+          currentAppServer = appServer;
+          await appServer.start();
+
+          abortHandler = () => {
+            const stopped = new Error('Codex turn stopped by user');
+            const finish = () => {
+              rejectTurn?.(stopped);
+              rejectCompaction?.(stopped);
+              appServer?.stop();
+            };
+            if (activeThreadId && expectedTurnId) {
+              void appServer?.request('turn/interrupt', {
+                threadId: activeThreadId,
+                turnId: expectedTurnId,
+              }).then(finish, finish);
+            } else {
+              finish();
+            }
+          };
+          streamAbortController.signal.addEventListener('abort', abortHandler, { once: true });
+          if (streamAbortController.signal.aborted) {
+            abortHandler();
+            throw new Error('Codex turn stopped by user');
+          }
+
+          const threadOptions = getAppServerThreadOptions({
+            cwd,
             permissionMode,
+            skipPermissions,
             resolvedModel,
-            resolvedReasoningEffort,
+            systemPrompt: resumeSessionId ? undefined : systemPrompt,
+          });
+          const threadResult = resumeSessionId
+            ? await appServer.request('thread/resume', { threadId: resumeSessionId, ...threadOptions })
+            : await appServer.request('thread/start', threadOptions);
+          activeThreadId = appServerThreadId(threadResult);
+          if (!activeThreadId) throw new Error('Codex app-server did not return a thread id');
+          emitThreadStarted(activeThreadId);
+
+          const emergencyHistoryActive = !resumeSessionId && Boolean(emergencyConversationHistory?.length);
+          const input = buildAppServerInput({
             prompt,
-            systemPrompt,
             files,
-            conversationHistory,
-            imagePaths,
-            resumeSessionId,
+            conversationHistory: emergencyConversationHistory,
+            includeEmergencyContext: emergencyHistoryActive,
           });
-          const CodexCtor = await loadCodexCtor();
-          const codex = new CodexCtor(runtimeConfig.clientOptions);
-          const thread = resumeSessionId
-            ? codex.resumeThread(resumeSessionId, runtimeConfig.threadOptions)
-            : codex.startThread(runtimeConfig.threadOptions);
-          const { events } = await thread.runStreamed(runtimeConfig.input, {
-            signal: streamAbortController.signal,
+          const startTurn = async (): Promise<Record<string, unknown>> => {
+            const response = await appServer!.request<{ turn?: { id?: string } }>('turn/start', {
+              threadId: activeThreadId,
+              input,
+              cwd,
+              ...(resolvedModel ? { model: resolvedModel } : {}),
+              ...(resolvedReasoningEffort ? { effort: resolvedReasoningEffort } : {}),
+            });
+            const turnId = response.turn?.id;
+            if (!turnId) throw new Error('Codex app-server did not return a turn id');
+            return waitForTurn(turnId);
+          };
+
+          let turn = await startTurn();
+          if (isContextWindowExceededTurn(turn)) {
+            recoveryCompactionAttempted = true;
+            recoveryCompactionCompleted = false;
+            compactionCycleActive = true;
+            awaitingPostCompactionUsageTurnId = null;
+            const priorState = getRuntimeContextState(sessionId);
+            updateRuntimeContextState(sessionId, 'codex', {
+              compaction: {
+                status: 'compacting',
+                trigger: 'recovery',
+                startedAt: Date.now(),
+                completedAt: null,
+                preTokens: priorState?.currentContext?.usedTokens ?? null,
+                postTokens: null,
+                postTokensEstimated: false,
+                error: null,
+              },
+            });
+            const compactCompleted = new Promise<void>((resolve, reject) => {
+              resolveCompaction = resolve;
+              rejectCompaction = reject;
+              compactionTimer = setTimeout(() => {
+                resolveCompaction = null;
+                rejectCompaction = null;
+                compactionTimer = null;
+                reject(new Error('Codex native compaction timed out before contextCompaction completed'));
+              }, compactionCompletionTimeoutMs());
+              compactionTimer.unref?.();
+            });
+            let compactRpcError: unknown = null;
+            let compactRpcErrorReported = false;
+            const reportCompactRpcError = () => {
+              if (compactRpcErrorReported || !compactRpcError) return;
+              compactRpcErrorReported = true;
+              console.warn(
+                '[codex-client] Ignoring compact RPC error after authoritative contextCompaction completion:',
+                compactRpcError,
+              );
+            };
+            void appServer.request('thread/compact/start', { threadId: activeThreadId })
+              .catch((error: unknown) => {
+                compactRpcError = error;
+                const stoppedDuringCleanup = error instanceof Error
+                  && error.message === 'Codex app-server stopped';
+                if (recoveryCompactionCompleted && !stoppedDuringCleanup) {
+                  reportCompactRpcError();
+                }
+              });
+            try {
+              await compactCompleted;
+            } catch (completionError) {
+              if (!compactRpcError) throw completionError;
+              const completionMessage = completionError instanceof Error
+                ? completionError.message
+                : String(completionError);
+              const rpcMessage = compactRpcError instanceof Error
+                ? compactRpcError.message
+                : String(compactRpcError);
+              throw new Error(`${completionMessage}; compact RPC also failed: ${rpcMessage}`);
+            }
+            reportCompactRpcError();
+            turn = await startTurn();
+          }
+
+          const turnStatus = typeof turn.status === 'string' ? turn.status : 'failed';
+          if (turnStatus !== 'completed') {
+            const error = turn.error && typeof turn.error === 'object'
+              ? String((turn.error as { message?: unknown }).message ?? `Codex turn ${turnStatus}`)
+              : `Codex turn ${turnStatus}`;
+            if (recoveryCompactionAttempted && isContextWindowExceededTurn(turn)) {
+              throw new Error(`ContextWindowExceeded after native compact and one retry: ${error}`);
+            }
+            throw new Error(error);
+          }
+
+          flushPendingAgentMessageAsText();
+          emitEvent({
+            type: 'result',
+            data: JSON.stringify({ usage: latestTurnUsage, session_id: activeThreadId }),
           });
-
-          for await (const event of events) {
-            handleThreadEvent(event, attemptState, resolvedModel, statusModel);
-          }
-
-          if (await maybeHandleDeferredResumeFailure(attemptState, resolvedModel)) {
-            return;
-          }
-
-          if (!doneEmitted) {
-            await handleAttemptFailure(
-              new Error(
-                attemptState.nonTerminalErrorMessage
-                  || 'Codex stream ended before turn completion',
-              ),
-              attemptState,
-              resolvedModel,
-            );
-            return;
-          }
+          emitDone();
           finalizeAttempt();
         } catch (error) {
-          await handleAttemptFailure(error, attemptState, resolvedModel);
+          if (recoveryCompactionAttempted && !recoveryCompactionCompleted) {
+            const completedAt = Date.now();
+            const previousCompaction = getRuntimeContextState(sessionId)?.compaction;
+            const activeCompaction = previousCompaction?.status === 'compacting'
+              ? previousCompaction
+              : null;
+            updateRuntimeContextState(sessionId, 'codex', {
+              compaction: {
+                status: 'failed',
+                trigger: activeCompaction?.trigger ?? 'recovery',
+                preTokens: activeCompaction?.preTokens ?? null,
+                postTokens: null,
+                postTokensEstimated: false,
+                startedAt: activeCompaction?.startedAt ?? completedAt,
+                completedAt,
+                error: error instanceof Error ? error.message : String(error),
+              },
+            });
+          }
+          appServer?.stop();
+          if (currentAppServer === appServer) currentAppServer = null;
+          await handleAttemptFailure(
+            attemptState.nonTerminalErrorMessage
+              ? new Error(attemptState.nonTerminalErrorMessage)
+              : error,
+            attemptState,
+            resolvedModel,
+          );
+        } finally {
+          if (abortHandler) streamAbortController.signal.removeEventListener('abort', abortHandler);
+          if (compactionTimer) clearTimeout(compactionTimer);
+          resolveCompaction = null;
+          rejectCompaction = null;
+          compactionTimer = null;
+          appServer?.stop();
+          if (currentAppServer === appServer) currentAppServer = null;
         }
       };
 
@@ -1300,10 +1480,12 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
           return;
         }
 
-        const codexBackend = getCodexBackend();
         const binary = findCodexBinary();
         if (!binary) {
-          emitEvent({ type: 'error', data: 'Codex CLI is not installed' });
+          emitEvent({
+            type: 'error',
+            data: 'Codex CLI is not installed. Install it with `npm install -g @openai/codex`, then run `codex login` and restart NoonFlow.',
+          });
           emitDone();
           closeStream();
           return;
@@ -1326,8 +1508,19 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
         const settings = await buildCodexClientSettings();
         const skipPermissions = isDangerouslySkipPermissionsEnabled(getSetting('dangerously_skip_permissions'));
 
+        const cliVersion = await getCodexVersion(binary);
+        if (!isCliVersionAtLeast(cliVersion, MIN_CODEX_APP_SERVER_VERSION)) {
+          emitEvent({
+            type: 'error',
+            data: `Codex CLI ${cliVersion || 'version unknown'} is too old for NoonFlow app-server. Install Codex CLI ${MIN_CODEX_APP_SERVER_VERSION} or newer, then restart NoonFlow.`,
+          });
+          emitDone();
+          closeStream();
+          return;
+        }
+
         console.info('[codex-client] model resolution', {
-          codexBackend,
+          codexBackend: 'app-server',
           inputModel: model,
           resolvedModelCandidate,
           resolvedModel,
@@ -1344,22 +1537,7 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
           });
         }
 
-        if (codexBackend === 'legacy-cli') {
-          runLegacyAttempt({
-            resumeSessionId,
-            binary: binary!,
-            cwd,
-            env: settings.env,
-            skipPermissions,
-            resolvedModel,
-            statusModel,
-            resolvedReasoningEffort: effectiveReasoningEffort,
-            imagePaths,
-          });
-          return;
-        }
-
-        await runSdkAttempt({
+        await runAppServerAttempt({
           resumeSessionId,
           binary,
           cwd,
@@ -1368,7 +1546,6 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
           resolvedModel,
           statusModel,
           resolvedReasoningEffort: effectiveReasoningEffort,
-          imagePaths,
         });
       };
 
@@ -1376,9 +1553,8 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
     },
 
     cancel() {
-      if (currentChild) {
-        terminateCodexProcess(currentChild);
-      }
+      currentAppServer?.stop();
+      currentAppServer = null;
       streamAbortController.abort();
     },
   });

@@ -1,35 +1,35 @@
 'use client';
 
-import { useMemo } from 'react';
-import { useChatTimelineStore } from '@/stores/chat-timeline-store';
+import { useEffect, useMemo, useState } from 'react';
 import { useRuntimeStore } from '@/stores/runtime-store';
-import { calculateContextUsage, type ContextUsageResult } from '@/lib/context-usage';
+import { resolveRuntimeContextUsage } from '@/lib/context-usage';
+import type { ContextUsageResult } from '@/lib/context-usage';
 import { useProviderModelsQuery } from '@/lib/queries/provider-queries';
 import { useAppSettingsQuery } from '@/lib/queries/settings-queries';
+import { parseContextWindowOverrides, resolveContextWindowSize } from '@/lib/default-context-sizes';
 import { SETTING_KEYS } from '@/types';
-import type { Message } from '@/types';
-
-const EMPTY_MESSAGES: Message[] = [];
+import type { AssistantRuntime, RuntimeContextState } from '@/types';
 
 /**
  * Hook: compute context usage for a given session and model.
  *
- * - Accumulates token usage from all persisted messages in the timeline
- * - Adds the current streaming token usage (from stream snapshot) if actively streaming
- * - Resolves context window size from: user overrides → default context sizes → 200K fallback
+ * Runtime state comes from the native Claude/Codex protocol. Model defaults
+ * are a labelled display fallback only. They never create a
+ * percentage, trigger compaction, or block a request.
  *
- * Reactivity: recomputes whenever messages, stream snapshot, or settings change.
+ * Reactivity: polls faster while the stream is active and recomputes for native
+ * state, runtime, model, or display-fallback setting changes.
  */
 export function useContextUsage(
   sessionId: string,
   model: string,
   providerId: string,
+  runtime: AssistantRuntime,
 ): ContextUsageResult {
-  const sessionState = useChatTimelineStore((s) => s.sessions[sessionId]);
   const snapshot = useRuntimeStore((s) => s.snapshots[sessionId]);
+  const [nativeState, setNativeState] = useState<RuntimeContextState | null>(null);
   const appSettingsQuery = useAppSettingsQuery();
   const providerModelsQuery = useProviderModelsQuery();
-  const messages = sessionState?.messages ?? EMPTY_MESSAGES;
   const rawOverrides = appSettingsQuery.data?.settings?.[SETTING_KEYS.CONTEXT_WINDOW_OVERRIDES] ?? '';
   const effectiveProviderId = providerId || providerModelsQuery.data?.default_provider_id || 'env';
   const modelLabel = useMemo(() => {
@@ -38,7 +38,37 @@ export function useContextUsage(
     return group?.models.find((entry) => entry.value === model)?.label;
   }, [effectiveProviderId, model, providerModelsQuery.data?.groups]);
 
+  useEffect(() => {
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/chat/context-state?session_id=${encodeURIComponent(sessionId)}`, {
+          cache: 'no-store',
+        });
+        if (response.ok) {
+          const payload = await response.json() as { state?: RuntimeContextState | null };
+          if (!disposed) setNativeState(payload.state ?? null);
+        }
+      } catch {
+        if (!disposed) setNativeState(null);
+      } finally {
+        if (!disposed) timer = setTimeout(poll, snapshot?.phase === 'active' ? 750 : 4_000);
+      }
+    };
+    void poll();
+    return () => {
+      disposed = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [sessionId, snapshot?.phase]);
+
   return useMemo(() => {
-    return calculateContextUsage(messages, snapshot, model, rawOverrides, modelLabel);
-  }, [messages, model, modelLabel, rawOverrides, snapshot]);
+    const displayFallbackWindow = resolveContextWindowSize(
+      model,
+      parseContextWindowOverrides(rawOverrides),
+      modelLabel,
+    );
+    return resolveRuntimeContextUsage(nativeState, runtime, displayFallbackWindow);
+  }, [model, modelLabel, nativeState, rawOverrides, runtime]);
 }

@@ -2,15 +2,21 @@
 
 import { memo } from 'react';
 import { useTranslation } from '@/hooks/useTranslation';
+import { buildCompactionDisplay } from '@/lib/context-usage';
 import { cn } from '@/lib/utils';
+import type { RuntimeCompactionState, RuntimeContextSource, TokenUsage } from '@/types';
 
 export interface ContextUsageBarProps {
-  /** Total tokens used in this session */
-  totalTokens: number;
+  /** Native tokens currently occupying the runtime context window. */
+  totalTokens: number | null;
   /** Used percentage: clamp(round(totalTokens / contextWindowSize * 100), 0, 100) */
-  usedPct: number;
+  usedPct: number | null;
   /** Context window size for the current model */
-  contextWindowSize: number;
+  contextWindowSize: number | null;
+  /** Native usage reported for the most recently completed turn. */
+  lastTurnUsage: TokenUsage | null;
+  source: RuntimeContextSource;
+  compaction: RuntimeCompactionState;
   /** Whether a message is currently streaming */
   isStreaming: boolean;
 }
@@ -36,11 +42,31 @@ export const ContextUsageBar = memo(function ContextUsageBar({
   totalTokens,
   usedPct,
   contextWindowSize,
+  lastTurnUsage,
+  source,
+  compaction,
   isStreaming,
 }: ContextUsageBarProps) {
   const { t } = useTranslation();
-  const displayPct = Math.min(usedPct, 100);
-  const fillClass = barColor(usedPct);
+  const hasNativeUsage = source === 'native' && usedPct !== null && totalTokens !== null;
+  const displayPct = hasNativeUsage ? Math.min(usedPct, 100) : 0;
+  const fillClass = hasNativeUsage ? barColor(usedPct) : 'bg-muted-foreground/30';
+  const compactionDisplay = buildCompactionDisplay(compaction);
+  const lastTurnTokens = lastTurnUsage
+    ? (lastTurnUsage.input_tokens ?? 0)
+      + (lastTurnUsage.output_tokens ?? 0)
+      + (lastTurnUsage.cache_read_input_tokens ?? 0)
+      + (lastTurnUsage.cache_creation_input_tokens ?? 0)
+    : null;
+  if (!hasNativeUsage && !compactionDisplay && lastTurnTokens === null) {
+    return null;
+  }
+  const usageTitle = hasNativeUsage
+    ? `${totalTokens.toLocaleString()} / ${contextWindowSize?.toLocaleString() ?? 'unknown'} tokens · ${usedPct}% · native${lastTurnTokens !== null ? ` · 本轮 ${lastTurnTokens.toLocaleString()} tokens` : ''}`
+    : lastTurnTokens !== null
+      ? `本轮 ${lastTurnTokens.toLocaleString()} tokens`
+      : '';
+  const title = [usageTitle, compactionDisplay?.detail].filter(Boolean).join(' · ');
 
   return (
     <div
@@ -50,30 +76,53 @@ export const ContextUsageBar = memo(function ContextUsageBar({
         'text-xs text-muted-foreground',
         'select-none',
       )}
-      title={`${totalTokens.toLocaleString()} / ${contextWindowSize.toLocaleString()} tokens · ${usedPct}%`}
+      title={title}
     >
-      {/* Compact progress bar — fixed small width, pushed slightly right */}
-      <div className="relative h-1.5 w-16 overflow-hidden rounded-full bg-muted/50 ml-1">
-        <div
-          className={cn(
-            'absolute left-0 top-0 h-full rounded-full transition-all duration-300',
-            fillClass,
-          )}
-          style={{ width: `${displayPct}%` }}
-        />
-      </div>
+      {hasNativeUsage && (
+        <>
+          {/* Compact progress bar — fixed small width, pushed slightly right */}
+          <div className="relative h-1.5 w-16 overflow-hidden rounded-full bg-muted/50 ml-1">
+            <div
+              className={cn(
+                'absolute left-0 top-0 h-full rounded-full transition-all duration-300',
+                fillClass,
+              )}
+              style={{ width: `${displayPct}%` }}
+            />
+          </div>
 
-      {/* Percentage */}
-      <span
-        className={cn(
-          'tabular-nums font-medium text-[11px]',
-          usedPct >= 85 && 'text-red-400',
-          usedPct >= 60 && usedPct < 85 && 'text-yellow-500',
-          usedPct < 60 && 'text-emerald-500',
-        )}
-      >
-        {usedPct}%
-      </span>
+          {/* Percentage */}
+          <span
+            className={cn(
+              'tabular-nums font-medium text-[11px]',
+              usedPct >= 85 && 'text-red-400',
+              usedPct >= 60 && usedPct < 85 && 'text-yellow-500',
+              usedPct < 60 && 'text-emerald-500',
+            )}
+          >
+            {usedPct}%
+          </span>
+        </>
+      )}
+
+      {compactionDisplay && (
+        <span
+          className={cn(
+            'max-w-[16rem] truncate text-[11px] tabular-nums',
+            compactionDisplay.status === 'compacting' && 'text-yellow-500',
+            compactionDisplay.status === 'completed' && 'text-emerald-500',
+            compactionDisplay.status === 'failed' && 'text-red-400',
+          )}
+        >
+          {compactionDisplay.label}
+        </span>
+      )}
+
+      {lastTurnTokens !== null && (
+        <span className="text-[11px] tabular-nums text-muted-foreground/70">
+          本轮 {lastTurnTokens.toLocaleString()}
+        </span>
+      )}
 
       {/* Streaming indicator */}
       {isStreaming && (

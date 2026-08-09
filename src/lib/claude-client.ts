@@ -11,7 +11,14 @@ import type {
   NotificationHookInput,
   PostToolUseHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
-import type { ClaudeStreamOptions, ContextBudgetRecoveryMetrics, PermissionRequestEvent, TokenUsage, ApiProvider } from '@/types';
+import type {
+  ApiProvider,
+  ClaudeStreamOptions,
+  ContextBudgetRecoveryMetrics,
+  PermissionRequestEvent,
+  RuntimeCompactionTrigger,
+  TokenUsage,
+} from '@/types';
 import { SETTING_KEYS } from '@/types';
 import { CLAUDE_AUTH_MODE_KEY, inferAssistantAuthMode } from './assistant-auth';
 import { registerPendingPermission } from './permission-registry';
@@ -31,6 +38,13 @@ import {
 import { findClaudePath, resolveScriptFromCmd, sanitizeEnv } from './claude-client/env';
 import { toSdkMcpConfig } from './claude-client/mcp';
 import { isDangerouslySkipPermissionsEnabled } from './assistant-permissions';
+import {
+  buildNativeTokenState,
+  createUnavailableRuntimeContextState,
+  getRuntimeContextState,
+  setRuntimeContextState,
+  updateRuntimeContextState,
+} from './context-runtime';
 import os from 'os';
 import fs from 'fs';
 import path from 'path';
@@ -40,6 +54,14 @@ let claudeQueryImpl: typeof query = query;
 // Max retry attempts when a resume session is active.
 // Attempt 1: try official /compact + retry; attempt 2: retry without resume.
 const MAX_RESUME_RETRIES = 2;
+const CLAUDE_COMPACTION_TIMEOUT_MS = 60_000;
+
+function claudeCompactionTimeoutMs(): number {
+  const override = Number.parseInt(process.env.NOONFLOW_CLAUDE_COMPACTION_TIMEOUT_MS ?? '', 10);
+  return Number.isFinite(override) && override > 0
+    ? override
+    : CLAUDE_COMPACTION_TIMEOUT_MS;
+}
 
 export function __setClaudeQueryForTests(override: typeof query | null): void {
   claudeQueryImpl = override ?? query;
@@ -94,6 +116,7 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
     files,
     toolTimeoutSeconds = 0,
     conversationHistory,
+    loadEmergencyConversationHistory,
     onRuntimeStatusChange,
     onContextBudgetRecovery,
     imageAgentMode,
@@ -129,6 +152,7 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
         compactRetrySuccess: false,
         recoveryDurationMs: null,
       };
+      setRuntimeContextState(sessionId, createUnavailableRuntimeContextState('claude_code'));
 
       try {
         const detectedClaudePath = findClaudePath();
@@ -337,6 +361,12 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
         // Pre-check: verify working_directory exists before attempting resume.
         // Resume depends on session context (cwd/project scope), so if the
         // original working_directory no longer exists, resume will fail.
+        let fallbackConversationHistory = conversationHistory;
+        const ensureEmergencyHistory = async (reason: string) => {
+          if (fallbackConversationHistory?.length || !loadEmergencyConversationHistory) return;
+          fallbackConversationHistory = await loadEmergencyConversationHistory(reason);
+        };
+
         let shouldResume = !!sdkSessionId;
         if (shouldResume && workingDirectory && !fs.existsSync(workingDirectory)) {
           console.warn(`[claude-client] Working directory "${workingDirectory}" does not exist, skipping resume`);
@@ -346,6 +376,7 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
             'Session fallback',
             'Original working directory no longer exists. Starting fresh conversation.',
           );
+          await ensureEmergencyHistory('working_directory_missing');
         }
         if (shouldResume) {
           queryOptions.resume = sdkSessionId;
@@ -481,6 +512,106 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
         let compactRetryActive = false;
         let recoveryStartedAt: number | null = null;
 
+        type ClaudeCompactMetadata = {
+          trigger: 'manual' | 'auto';
+          pre_tokens: number;
+          post_tokens?: number;
+          duration_ms?: number;
+        };
+
+        const beginNativeCompaction = (
+          trigger?: RuntimeCompactionTrigger,
+        ): void => {
+          const previous = getRuntimeContextState(sessionId);
+          const activeCompaction = previous?.compaction.status === 'compacting'
+            ? previous.compaction
+            : null;
+          updateRuntimeContextState(sessionId, 'claude_code', {
+            compaction: {
+              status: 'compacting',
+              trigger: trigger ?? null,
+              startedAt: activeCompaction?.startedAt ?? Date.now(),
+              completedAt: null,
+              preTokens: null,
+              postTokens: null,
+              postTokensEstimated: false,
+              error: null,
+            },
+          });
+        };
+
+        const completeNativeCompaction = (
+          metadata: ClaudeCompactMetadata,
+          triggerOverride?: RuntimeCompactionTrigger,
+        ): void => {
+          const previous = getRuntimeContextState(sessionId);
+          const completedAt = Date.now();
+          const durationMs = typeof metadata.duration_ms === 'number'
+            && Number.isFinite(metadata.duration_ms)
+            && metadata.duration_ms >= 0
+            ? metadata.duration_ms
+            : null;
+          const startedAt = previous?.compaction.status === 'compacting'
+            ? previous.compaction.startedAt ?? completedAt
+            : durationMs === null
+              ? completedAt
+              : completedAt - durationMs;
+          updateRuntimeContextState(sessionId, 'claude_code', {
+            compaction: {
+              status: 'completed',
+              trigger: triggerOverride ?? metadata.trigger,
+              preTokens: metadata.pre_tokens,
+              postTokens: metadata.post_tokens ?? null,
+              postTokensEstimated: false,
+              startedAt,
+              completedAt,
+              error: null,
+            },
+          });
+        };
+
+        const failNativeCompaction = (error: unknown): void => {
+          const previous = getRuntimeContextState(sessionId);
+          if (previous?.compaction.status === 'completed') return;
+          const completedAt = Date.now();
+          const activeCompaction = previous?.compaction.status === 'compacting'
+            ? previous.compaction
+            : null;
+          updateRuntimeContextState(sessionId, 'claude_code', {
+            compaction: {
+              status: 'failed',
+              trigger: activeCompaction?.trigger ?? null,
+              preTokens: activeCompaction?.preTokens ?? null,
+              postTokens: null,
+              postTokensEstimated: false,
+              startedAt: activeCompaction?.startedAt ?? completedAt,
+              completedAt,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          });
+        };
+
+        const refreshNativeContextUsage = async (
+          activeQuery: ReturnType<typeof query>,
+        ): Promise<void> => {
+          try {
+            const usage = await activeQuery.getContextUsage();
+            updateRuntimeContextState(sessionId, 'claude_code', {
+              currentContext: buildNativeTokenState(usage.totalTokens, usage.maxTokens),
+              source: 'native',
+            });
+          } catch (error) {
+            updateRuntimeContextState(sessionId, 'claude_code', {
+              currentContext: null,
+              source: 'unavailable',
+            });
+            console.warn(
+              '[claude-client] Native context usage unavailable:',
+              error instanceof Error ? error.message : String(error),
+            );
+          }
+        };
+
         const runOfficialCompact = async (resumeSessionId: string): Promise<void> => {
           recoveryStartedAt ??= Date.now();
           await persistRecoveryMetrics({ officialCompactAttempted: true });
@@ -488,6 +619,7 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
             '正在压缩上下文',
             '检测到 Claude resume 会话上下文超限，系统正在执行官方 /compact。',
           );
+          beginNativeCompaction('recovery');
 
           const compactOptions: Options = {
             ...queryOptions,
@@ -503,19 +635,75 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
             options: compactOptions,
           });
 
-          for await (const compactMessage of compactConversation) {
-            if (abortController?.signal.aborted) {
-              throw new Error('Official /compact aborted');
-            }
+          let sawCompactBoundary = false;
+          let compactResultError: string | null = null;
+          const compactTimeoutMs = claudeCompactionTimeoutMs();
+          let compactTimer: ReturnType<typeof setTimeout> | null = null;
+          let compactAbortHandler: (() => void) | null = null;
+          const closeCompactConversation = () => {
+            try { compactConversation.close(); } catch { /* best effort */ }
+          };
+          const compactStopped = new Promise<never>((_resolve, reject) => {
+            compactTimer = setTimeout(() => {
+              closeCompactConversation();
+              reject(new Error(`Claude native /compact timed out after ${compactTimeoutMs}ms`));
+            }, compactTimeoutMs);
+            compactTimer.unref?.();
+            compactAbortHandler = () => {
+              closeCompactConversation();
+              reject(new Error('Official /compact aborted'));
+            };
+            abortController?.signal.addEventListener('abort', compactAbortHandler, { once: true });
+            if (abortController?.signal.aborted) compactAbortHandler();
+          });
 
-            if (compactMessage.type === 'result') {
-              const resultMessage = compactMessage as SDKResultMessage;
-              if (resultMessage.is_error) {
-                const resultText = (resultMessage as SDKResultSuccess).result;
-                throw new Error(resultText || 'Official /compact failed');
+          try {
+            const compactIterator = compactConversation[Symbol.asyncIterator]();
+            while (true) {
+              const next = await Promise.race([compactIterator.next(), compactStopped]);
+              if (next.done) break;
+              const compactMessage = next.value;
+
+              if (compactMessage.type === 'result') {
+                const resultMessage = compactMessage as SDKResultMessage;
+                if (resultMessage.is_error) {
+                  const resultText = (resultMessage as SDKResultSuccess).result;
+                  compactResultError = resultText || 'Official /compact failed';
+                }
+              }
+              if (compactMessage.type === 'system' && compactMessage.subtype === 'status') {
+                const statusMessage = compactMessage as typeof compactMessage & {
+                  status?: 'compacting' | null;
+                };
+                if (statusMessage.status === 'compacting') {
+                  beginNativeCompaction('recovery');
+                }
+              }
+              if (compactMessage.type === 'system' && compactMessage.subtype === 'compact_boundary') {
+                sawCompactBoundary = true;
+                const boundary = compactMessage as typeof compactMessage & {
+                  compact_metadata: ClaudeCompactMetadata;
+                };
+                completeNativeCompaction(boundary.compact_metadata, 'recovery');
               }
             }
+          } finally {
+            if (compactTimer) clearTimeout(compactTimer);
+            if (compactAbortHandler) {
+              abortController?.signal.removeEventListener('abort', compactAbortHandler);
+            }
           }
+
+          if (!sawCompactBoundary) {
+            throw new Error(compactResultError || 'Claude native /compact ended without a compact_boundary event');
+          }
+          if (compactResultError) {
+            console.warn(
+              '[claude-client] Ignoring /compact result error after authoritative compact_boundary:',
+              compactResultError,
+            );
+          }
+          await refreshNativeContextUsage(compactConversation);
 
           await persistRecoveryMetrics({
             officialCompactAttempted: true,
@@ -534,7 +722,7 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
           const promptPayload = buildFinalPrompt({
             prompt,
             useHistory: !queryOptions.resume,
-            conversationHistory,
+            conversationHistory: fallbackConversationHistory,
             files,
             workingDirectory,
             imageAgentMode,
@@ -550,16 +738,21 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
           }
 
           try {
-            const iter = conversation[Symbol.asyncIterator]();
+            const resumedConversation = conversation;
+            const iter = resumedConversation[Symbol.asyncIterator]();
             const first = await iter.next();
-            conversation = (async function* () {
+            const replayedConversation = (async function* () {
               if (!first.done) yield first.value;
               while (true) {
                 const next = await iter.next();
                 if (next.done) break;
                 yield next.value;
               }
-            })() as ReturnType<typeof query>;
+            })();
+            Object.defineProperty(replayedConversation, 'getContextUsage', {
+              value: () => resumedConversation.getContextUsage(),
+            });
+            conversation = replayedConversation as ReturnType<typeof query>;
             return conversation;
           } catch (resumeError) {
             throw new RetryableError('Resume failed', { cause: resumeError });
@@ -587,6 +780,10 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
                   return;
                 } catch (compactError) {
                   compactRetryActive = false;
+                  failNativeCompaction(compactError);
+                  if (abortController?.signal.aborted) {
+                    throw compactError;
+                  }
                   console.warn('[claude-client] Official /compact failed, retrying without resume:', compactError instanceof Error ? compactError.message : String(compactError));
                   clearResumedSession();
                   emitNotificationStatus(
@@ -594,6 +791,7 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
                     '官方 /compact 失败，系统将启动新的对话继续当前请求。',
                   );
                   delete queryOptions.resume;
+                  await ensureEmergencyHistory('native_compaction_failed');
                   return;
                 }
               }
@@ -608,6 +806,9 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
                   : 'Previous session could not be resumed. Starting fresh conversation.',
               );
               delete queryOptions.resume;
+              await ensureEmergencyHistory(
+                attempt === 2 ? 'native_resume_failed_after_compaction' : 'native_resume_failed',
+              );
             },
           },
         );
@@ -727,15 +928,24 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
                       tools: sysMsg.tools,
                     }),
                   }));
+                  await refreshNativeContextUsage(conversation);
                 } else if (sysMsg.subtype === 'status') {
                   const statusMsg = sysMsg as SDKSystemMessage & {
                     status?: 'compacting' | null;
                     permissionMode?: string;
+                    compact_result?: 'success' | 'failed';
+                    compact_error?: string;
                   };
                   if (statusMsg.status === 'compacting') {
+                    beginNativeCompaction();
                     emitNotificationStatus(
                       '正在压缩上下文',
                       'Claude 正在执行官方 /compact。',
+                    );
+                  }
+                  if (statusMsg.compact_result === 'failed') {
+                    failNativeCompaction(
+                      statusMsg.compact_error || 'Claude native compaction failed',
                     );
                   }
                   // SDK sends status messages when permission mode changes (e.g. ExitPlanMode)
@@ -746,10 +956,15 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
                     }));
                   }
                 } else if (sysMsg.subtype === 'compact_boundary') {
+                  const boundary = message as typeof message & {
+                    compact_metadata: ClaudeCompactMetadata;
+                  };
+                  completeNativeCompaction(boundary.compact_metadata);
                   emitNotificationStatus(
                     '上下文压缩完成',
                     'Claude 已完成官方 /compact。',
                   );
+                  await refreshNativeContextUsage(conversation);
                 }
               }
               break;
@@ -783,6 +998,10 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
             case 'result': {
               const resultMsg = message as SDKResultMessage;
               tokenUsage = extractTokenUsage(resultMsg);
+              updateRuntimeContextState(sessionId, 'claude_code', {
+                lastTurnUsage: tokenUsage,
+              });
+              await refreshNativeContextUsage(conversation);
               controller.enqueue(formatSSE({
                 type: 'result',
                 data: JSON.stringify({

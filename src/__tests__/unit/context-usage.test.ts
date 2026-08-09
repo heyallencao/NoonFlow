@@ -1,8 +1,21 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 
-import type { Message, SessionStreamSnapshot } from '../../types';
-import { calculateContextUsage } from '../../lib/context-usage';
+import type { Message, RuntimeContextState, SessionStreamSnapshot } from '../../types';
+import { ContextUsageBar } from '../../components/chat/ContextUsageBar';
+import {
+  buildCompactionDisplay,
+  calculateContextUsage,
+  resolveRuntimeContextUsage,
+} from '../../lib/context-usage';
+import {
+  clearRuntimeContextState,
+  getRuntimeContextState,
+  setRuntimeContextState,
+  updateRuntimeContextState,
+} from '../../lib/context-runtime';
 
 function createMessage(overrides: Partial<Message> & Pick<Message, 'id' | 'role' | 'content'>): Message {
   return {
@@ -29,6 +42,152 @@ function createSnapshot(
 }
 
 describe('context usage', () => {
+  it('renders completed native compaction with token transition and timestamps', () => {
+    const display = buildCompactionDisplay({
+      status: 'completed',
+      trigger: 'recovery',
+      preTokens: 1_000,
+      postTokens: 300,
+      postTokensEstimated: false,
+      startedAt: Date.parse('2026-08-09T01:02:03.000Z'),
+      completedAt: Date.parse('2026-08-09T01:02:04.000Z'),
+      error: null,
+    });
+
+    assert.equal(display?.status, 'completed');
+    assert.match(display?.label ?? '', /压缩完成 1,000 → 300 tokens/);
+    assert.match(display?.detail ?? '', /窗口溢出恢复/);
+    assert.match(display?.detail ?? '', /2026-08-09T01:02:03.000Z/);
+    assert.match(display?.detail ?? '', /2026-08-09T01:02:04.000Z/);
+  });
+
+  it('labels Pi estimated post-compaction tokens as approximate without creating occupancy', () => {
+    const compaction = {
+      status: 'completed' as const,
+      trigger: 'auto' as const,
+      preTokens: 900,
+      postTokens: 240,
+      postTokensEstimated: true,
+      startedAt: 1,
+      completedAt: 2,
+      error: null,
+    };
+    const display = buildCompactionDisplay(compaction);
+    const result = resolveRuntimeContextUsage({
+      runtime: 'pi',
+      currentContext: null,
+      lastTurnUsage: { input_tokens: 3, output_tokens: 2 },
+      source: 'unavailable',
+      compaction,
+      updatedAt: 2,
+    }, 'pi', 128_000);
+
+    assert.match(display?.label ?? '', /900 → 约 240 tokens/);
+    assert.equal(result.source, 'unavailable');
+    assert.equal(result.totalTokens, null);
+    assert.equal(result.usedPct, null);
+    assert.equal(result.contextWindowSize, 128_000);
+    assert.equal(result.compaction, compaction);
+  });
+
+  it('renders native compaction failure details instead of hiding them', () => {
+    const display = buildCompactionDisplay({
+      status: 'failed',
+      trigger: 'auto',
+      preTokens: null,
+      postTokens: null,
+      postTokensEstimated: false,
+      startedAt: Date.parse('2026-08-09T01:02:03.000Z'),
+      completedAt: Date.parse('2026-08-09T01:02:05.000Z'),
+      error: 'native compact timed out',
+    });
+
+    assert.equal(display?.status, 'failed');
+    assert.equal(display?.label, '压缩失败：native compact timed out');
+    assert.match(display?.detail ?? '', /自动触发/);
+    assert.match(display?.detail ?? '', /native compact timed out/);
+  });
+
+  it('keeps native percentage visible beside completed and failed compaction states', () => {
+    const baseProps = {
+      totalTokens: 300,
+      usedPct: 30,
+      contextWindowSize: 1_000,
+      lastTurnUsage: null,
+      source: 'native' as const,
+      isStreaming: false,
+    };
+    const completedMarkup = renderToStaticMarkup(createElement(ContextUsageBar, {
+      ...baseProps,
+      compaction: {
+        status: 'completed',
+        trigger: 'auto',
+        preTokens: 900,
+        postTokens: 300,
+        postTokensEstimated: false,
+        startedAt: Date.parse('2026-08-09T01:02:03.000Z'),
+        completedAt: Date.parse('2026-08-09T01:02:04.000Z'),
+        error: null,
+      },
+    }));
+    const failedMarkup = renderToStaticMarkup(createElement(ContextUsageBar, {
+      ...baseProps,
+      compaction: {
+        status: 'failed',
+        trigger: 'auto',
+        preTokens: null,
+        postTokens: null,
+        postTokensEstimated: false,
+        startedAt: Date.parse('2026-08-09T01:02:03.000Z'),
+        completedAt: Date.parse('2026-08-09T01:02:05.000Z'),
+        error: 'native compact timed out',
+      },
+    }));
+
+    assert.match(completedMarkup, />30%<.*压缩完成 900 → 300 tokens/);
+    assert.match(completedMarkup, /结束 2026-08-09T01:02:04.000Z/);
+    assert.match(failedMarkup, />30%<.*压缩失败：native compact timed out/);
+  });
+
+  it('hides unavailable occupancy instead of rendering an empty bar', () => {
+    const markup = renderToStaticMarkup(createElement(ContextUsageBar, {
+      totalTokens: null,
+      usedPct: null,
+      contextWindowSize: 128_000,
+      lastTurnUsage: null,
+      source: 'unavailable',
+      compaction: { status: 'idle' },
+      isStreaming: false,
+    }));
+
+    assert.equal(markup, '');
+  });
+
+  it('keeps Pi native turn and compaction facts without an unavailable occupancy bar', () => {
+    const markup = renderToStaticMarkup(createElement(ContextUsageBar, {
+      totalTokens: null,
+      usedPct: null,
+      contextWindowSize: 128_000,
+      lastTurnUsage: { input_tokens: 10, output_tokens: 5 },
+      source: 'unavailable',
+      compaction: {
+        status: 'completed',
+        trigger: 'auto',
+        preTokens: 900,
+        postTokens: 240,
+        postTokensEstimated: true,
+        startedAt: 1,
+        completedAt: 2,
+        error: null,
+      },
+      isStreaming: false,
+    }));
+
+    assert.doesNotMatch(markup, /暂不可用|width:/);
+    assert.match(markup, /压缩完成 900 → 约 240 tokens/);
+    assert.match(markup, /本轮 15/);
+  });
+
   it('uses the current streaming turn usage without accumulating prior turns', () => {
     const messages = [
       createMessage({
@@ -61,6 +220,141 @@ describe('context usage', () => {
     assert.equal(result.totalTokens, 150);
     assert.equal(result.usedPct, 15);
     assert.equal(result.contextWindowSize, 1_000);
+    assert.equal(result.source, 'estimated');
+  });
+
+  it('keeps native usage unavailable while using a default window only as a display fallback', () => {
+    const result = resolveRuntimeContextUsage(null, 'codex', 200_000);
+
+    assert.equal(result.source, 'unavailable');
+    assert.equal(result.totalTokens, null);
+    assert.equal(result.usedPct, null);
+    assert.equal(result.contextWindowSize, 200_000);
+    assert.equal(result.lastTurnUsage, null);
+  });
+
+  it('does not calculate a percentage from the display fallback when native total lacks a window', () => {
+    const state: RuntimeContextState = {
+      runtime: 'claude_code',
+      currentContext: { usedTokens: 75_000, contextWindowTokens: null, percentage: null },
+      lastTurnUsage: { input_tokens: 10, output_tokens: 5 },
+      source: 'native',
+      compaction: { status: 'idle' },
+      updatedAt: 1,
+    };
+
+    const result = resolveRuntimeContextUsage(state, 'claude_code', 200_000);
+
+    assert.equal(result.source, 'native');
+    assert.equal(result.totalTokens, 75_000);
+    assert.equal(result.usedPct, null);
+    assert.equal(result.contextWindowSize, 200_000);
+    assert.deepEqual(result.lastTurnUsage, { input_tokens: 10, output_tokens: 5 });
+  });
+
+  it('isolates a native state from a different runtime', () => {
+    const state: RuntimeContextState = {
+      runtime: 'codex',
+      currentContext: { usedTokens: 420, contextWindowTokens: 1_000, percentage: 42 },
+      lastTurnUsage: null,
+      source: 'native',
+      compaction: {
+        status: 'completed',
+        trigger: 'recovery',
+        preTokens: 500,
+        postTokens: 200,
+        postTokensEstimated: false,
+        startedAt: 1,
+        completedAt: 2,
+        error: null,
+      },
+      updatedAt: 1,
+    };
+
+    const result = resolveRuntimeContextUsage(state, 'pi', 128_000);
+
+    assert.equal(result.source, 'unavailable');
+    assert.equal(result.usedPct, null);
+    assert.deepEqual(result.compaction, { status: 'idle' });
+  });
+
+  it('stores runtime context independently per session', () => {
+    setRuntimeContextState('session-a', {
+      runtime: 'codex',
+      currentContext: { usedTokens: 100, contextWindowTokens: 1_000, percentage: 10 },
+      lastTurnUsage: { input_tokens: 8, output_tokens: 2 },
+      source: 'native',
+      compaction: { status: 'idle' },
+      updatedAt: 0,
+    });
+    setRuntimeContextState('session-b', {
+      runtime: 'claude_code',
+      currentContext: { usedTokens: 200, contextWindowTokens: 2_000, percentage: 10 },
+      lastTurnUsage: { input_tokens: 15, output_tokens: 5 },
+      source: 'native',
+      compaction: {
+        status: 'completed',
+        trigger: 'auto',
+        preTokens: 300,
+        postTokens: 100,
+        postTokensEstimated: false,
+        startedAt: 1,
+        completedAt: 2,
+        error: null,
+      },
+      updatedAt: 0,
+    });
+
+    assert.equal(getRuntimeContextState('session-a')?.currentContext?.usedTokens, 100);
+    assert.equal(getRuntimeContextState('session-b')?.currentContext?.usedTokens, 200);
+    assert.equal(getRuntimeContextState('session-a')?.runtime, 'codex');
+    assert.equal(getRuntimeContextState('session-b')?.runtime, 'claude_code');
+    clearRuntimeContextState('session-a');
+    clearRuntimeContextState('session-b');
+  });
+
+  it('replaces compaction lifecycle states atomically without leaking prior fields', () => {
+    setRuntimeContextState('session-atomic', {
+      runtime: 'codex',
+      currentContext: null,
+      lastTurnUsage: null,
+      source: 'unavailable',
+      compaction: {
+        status: 'completed',
+        trigger: 'auto',
+        preTokens: 900,
+        postTokens: 300,
+        postTokensEstimated: false,
+        startedAt: 10,
+        completedAt: 20,
+        error: null,
+      },
+      updatedAt: 0,
+    });
+
+    updateRuntimeContextState('session-atomic', 'codex', {
+      compaction: {
+        status: 'compacting',
+        trigger: 'recovery',
+        preTokens: 300,
+        postTokens: null,
+        postTokensEstimated: false,
+        startedAt: 30,
+        completedAt: null,
+        error: null,
+      },
+    });
+    assert.deepEqual(getRuntimeContextState('session-atomic')?.compaction, {
+      status: 'compacting',
+      trigger: 'recovery',
+      preTokens: 300,
+      postTokens: null,
+      postTokensEstimated: false,
+      startedAt: 30,
+      completedAt: null,
+      error: null,
+    });
+    clearRuntimeContextState('session-atomic');
   });
 
   it('uses the latest completed assistant turn instead of accumulating all prior request totals', () => {

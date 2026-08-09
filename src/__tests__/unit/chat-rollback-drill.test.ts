@@ -1,11 +1,7 @@
 import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-
-import {
-  DEFAULT_CODEX_BACKEND,
-  getCodexBackend,
-  normalizeCodexBackend,
-} from '../../lib/codex-backend';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   getChatRolloutMode,
   usesBridgeCompatibilityFallbacks,
@@ -13,8 +9,6 @@ import {
 
 const ORIGINAL_CHAT_ROLLOUT = process.env.NOONFLOW_CHAT_ROLLOUT_MODE;
 const ORIGINAL_PUBLIC_CHAT_ROLLOUT = process.env.NEXT_PUBLIC_NOONFLOW_CHAT_ROLLOUT_MODE;
-const ORIGINAL_CODEX_BACKEND = process.env.NOONFLOW_CODEX_BACKEND;
-const ORIGINAL_PUBLIC_CODEX_BACKEND = process.env.NEXT_PUBLIC_NOONFLOW_CODEX_BACKEND;
 
 afterEach(() => {
   if (ORIGINAL_CHAT_ROLLOUT === undefined) {
@@ -27,18 +21,6 @@ afterEach(() => {
     delete process.env.NEXT_PUBLIC_NOONFLOW_CHAT_ROLLOUT_MODE;
   } else {
     process.env.NEXT_PUBLIC_NOONFLOW_CHAT_ROLLOUT_MODE = ORIGINAL_PUBLIC_CHAT_ROLLOUT;
-  }
-
-  if (ORIGINAL_CODEX_BACKEND === undefined) {
-    delete process.env.NOONFLOW_CODEX_BACKEND;
-  } else {
-    process.env.NOONFLOW_CODEX_BACKEND = ORIGINAL_CODEX_BACKEND;
-  }
-
-  if (ORIGINAL_PUBLIC_CODEX_BACKEND === undefined) {
-    delete process.env.NEXT_PUBLIC_NOONFLOW_CODEX_BACKEND;
-  } else {
-    process.env.NEXT_PUBLIC_NOONFLOW_CODEX_BACKEND = ORIGINAL_PUBLIC_CODEX_BACKEND;
   }
 
 });
@@ -63,34 +45,20 @@ describe('chat rollback drills', () => {
     assert.equal(usesBridgeCompatibilityFallbacks(getChatRolloutMode()), true);
   });
 
-  it('defaults invalid codex backend values to sdk-system-cli and prefers explicit env values', () => {
-    delete process.env.NEXT_PUBLIC_NOONFLOW_CODEX_BACKEND;
-    delete process.env.NOONFLOW_CODEX_BACKEND;
-
-    assert.equal(normalizeCodexBackend(undefined), DEFAULT_CODEX_BACKEND);
-    assert.equal(normalizeCodexBackend('unknown'), DEFAULT_CODEX_BACKEND);
-    assert.equal(getCodexBackend(), DEFAULT_CODEX_BACKEND);
-
-    process.env.NOONFLOW_CODEX_BACKEND = 'sdk-bundled';
-    assert.equal(getCodexBackend(), 'sdk-system-cli');
-
-    process.env.NEXT_PUBLIC_NOONFLOW_CODEX_BACKEND = 'sdk-system-cli';
-    assert.equal(getCodexBackend(), 'sdk-system-cli');
+  it('has no Codex backend selector to roll back through', () => {
+    assert.equal(fs.existsSync(path.resolve('src/lib/codex-backend.ts')), false);
   });
 
-  it('does not expose a bundled backend or revive it through the removed enable switch', () => {
-    process.env.NOONFLOW_ENABLE_CODEX_BUNDLED = 'true';
-    process.env.NOONFLOW_CODEX_BACKEND = 'sdk-bundled';
-    delete process.env.NEXT_PUBLIC_NOONFLOW_CODEX_BACKEND;
-
-    assert.equal(normalizeCodexBackend('sdk-bundled'), 'sdk-system-cli');
-    assert.equal(getCodexBackend(), 'sdk-system-cli');
+  it('does not read a Codex backend environment switch in the production path', () => {
+    const clientSource = fs.readFileSync(path.resolve('src/lib/codex-client.ts'), 'utf8');
+    const routeSource = fs.readFileSync(path.resolve('src/app/api/chat/route.ts'), 'utf8');
+    assert.doesNotMatch(`${clientSource}\n${routeSource}`, /NOONFLOW_CODEX_BACKEND|MONOLITH_CODEX_BACKEND/);
   });
 
-  it('still supports rolling codex backend back to legacy-cli explicitly', () => {
-    process.env.NOONFLOW_CODEX_BACKEND = 'legacy-cli';
-    delete process.env.NEXT_PUBLIC_NOONFLOW_CODEX_BACKEND;
-
-    assert.equal(getCodexBackend(), 'legacy-cli');
+  it('keeps app-server as the sole Codex production path', () => {
+    const clientSource = fs.readFileSync(path.resolve('src/lib/codex-client.ts'), 'utf8');
+    const routeSource = fs.readFileSync(path.resolve('src/app/api/chat/route.ts'), 'utf8');
+    assert.match(clientSource, /runAppServerAttempt/);
+    assert.match(routeSource, /codex_backend:\s*effectiveRuntime === 'codex' \? 'app-server' : null/);
   });
 });

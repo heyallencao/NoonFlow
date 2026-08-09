@@ -1,10 +1,10 @@
 # PROGRESS
-1. 目标：Codex 与 Claude Code 仅通过 system CLI 运行，制品只携带固定版本轻量 SDK。
-2. 初始 git status 为空；用户给定现状：测试 350/350，Codex 平台包 116 MiB，Claude SDK 77 MiB。
-3. 任务 0 实测：`npm test` 为 tests/pass 350、fail/skipped/todo 0，typecheck 通过。
-4. 编辑前基线构建通过；`.app` 1076875264 B、DMG 353378304 B、ZIP 369496064 B（`du -sk`）。
-5. 基线 `.app`：Codex darwin-arm64 121032704 B；Claude 0.2.62 主包 70836224 B（磁盘字节）。
-6. 顺序：运行时唯一化 → 制品精准排除与扫描红绿验证 → 最终构建、体积公式和真实 smoke。
-7. 最大风险：Claude 0.3.226 API/认证差异，以及非 macOS 平台只能验证配置与扫描规则。
-8. 任务 1 完成：SDK 锁定 0.147.0/0.3.226，仅 system CLI；相关 25/25、全量 350/350、typecheck 通过。
-9. 任务 2/3 与 review 修复完成：扫描 0 命中、app 788881408 B、公式余量 101367808 B；Windows 新旧布局/managed env 4/4、Claude 无本机 CLI 隔离 1/1、全量 354/354；真实 smoke 与双 CLI 缺失反验通过。
+1. 目标：Claude/Codex/Pi 共用 `RuntimeContextState`，只同步各 runtime 原生 usage/压缩生命周期与有界恢复。
+2. 基线：保留 `HEAD=75347e2` 的现有脏树，不 fetch/merge/reset/checkout；指定 7 文件为 75/75，fail/skip/todo=0。
+3. 已复核：Claude `/compact` 有 timeout/abort 竞争；Codex cached 去重、reasoning 门控、单 app-server 与 completed item 权威语义均保留。
+4. 顺序：冻结三 runtime 职责边界 → Pi 原生 producer → Pi 恢复历史懒加载 → 反向红绿 → 最多 3 轮完整验收。
+5. 最大风险：Pi 0.84.1 事件字段与 resume 失败时序；不得把 `estimatedTokensAfter` 或默认窗口升级为真实占用/决策。
+6. 实现选择：按建议使用与 Claude/Codex 同形的 lazy loader；只在缺失/失效/失败后读取最多 50 条并裁剪。
+7. 已完成：Pi `message_end` 仅更新 last-turn；原生 start/end 映射 trigger、成功/aborted/error/缺结果，近似 post 明示“约”且不生成占用。
+8. 已完成：Pi 与 Claude/Codex 同形 lazy loader；正常 resume 不读/注入 DB，缺失或明确失败后才读最多 50 条并裁剪，局部 34/34。
+9. 已交付：第 2 轮全量 421/421 与全部门禁通过；隐藏 unavailable 空条，Codex 改用原生 `last.totalTokens/window` 显示完整当前上下文。

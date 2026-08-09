@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { parseWindowsPiShimScript, piClientPlatform, resolveWindowsPiNodeCommand, streamPi } from '../../lib/pi-client';
+import { getRuntimeContextState } from '../../lib/context-runtime';
 import { composePiModelSelection, splitPiModelSelection } from '../../lib/pi-model-selection';
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'noonflow-pi-rpc-'));
@@ -14,6 +15,7 @@ const capturePath = path.join(testDir, 'capture.json');
 const originalFind = piClientPlatform.findPiBinary;
 const originalSpawn = piClientPlatform.spawn;
 const originalDangerousPermissions = piClientPlatform.dangerouslySkipPermissionsEnabled;
+let fakeScenario = 'normal';
 
 async function readStream(stream: ReadableStream<string>): Promise<string> {
   const reader = stream.getReader();
@@ -28,6 +30,7 @@ async function readStream(stream: ReadableStream<string>): Promise<string> {
 before(() => {
   fs.writeFileSync(fakePiPath, `
 const fs = require('node:fs');
+const scenario = process.env.NOONFLOW_PI_SCENARIO || 'normal';
 if (process.argv.includes('bad-session')) {
   process.stderr.write("No session found matching 'bad-session'\\n");
   process.exit(2);
@@ -55,6 +58,25 @@ process.stdin.on('data', (chunk) => {
     if (command.type === 'prompt') {
       send({ type: 'response', id: command.id, success: true });
       send({ type: 'agent_start' });
+      if (scenario === 'compaction-success') {
+        send({ type: 'compaction_start', reason: 'threshold' });
+        send({ type: 'compaction_end', reason: 'threshold', result: { summary: 'summary', firstKeptEntryId: 'entry-1', tokensBefore: 900, estimatedTokensAfter: 240 }, aborted: false, willRetry: false });
+      }
+      if (scenario === 'compaction-aborted') {
+        send({ type: 'compaction_start', reason: 'overflow' });
+        send({ type: 'compaction_end', reason: 'overflow', aborted: true, willRetry: false });
+      }
+      if (scenario === 'compaction-error') {
+        send({ type: 'compaction_start', reason: 'manual' });
+        send({ type: 'compaction_end', reason: 'manual', aborted: false, willRetry: false, errorMessage: 'Manual compaction fixture failed' });
+      }
+      if (scenario === 'compaction-missing-result') {
+        send({ type: 'compaction_start', reason: 'threshold' });
+        send({ type: 'compaction_end', reason: 'threshold', aborted: false, willRetry: false });
+      }
+      if (scenario === 'ordinary-event') {
+        send({ type: 'auto_retry_end', reason: 'threshold', result: { tokensBefore: 700, estimatedTokensAfter: 200 }, aborted: false, success: true });
+      }
       send({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: 'checking' } });
       send({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_end', toolCall: { id: 'tool-1', name: 'read', arguments: { path: 'README.md' } } } });
       send({ type: 'tool_execution_end', toolCallId: 'tool-1', result: { content: [{ type: 'text', text: 'file content' }] }, isError: false });
@@ -69,7 +91,7 @@ process.stdin.on('data', (chunk) => {
   piClientPlatform.spawn = (_command, args, options) => spawn(
     process.execPath,
     [fakePiPath, ...args],
-    { ...options, env: { ...options.env, NOONFLOW_PI_CAPTURE: capturePath } },
+    { ...options, env: { ...options.env, NOONFLOW_PI_CAPTURE: capturePath, NOONFLOW_PI_SCENARIO: fakeScenario } },
   );
 });
 
@@ -139,6 +161,114 @@ describe('streamPi', () => {
     assert.ok(capture.argv.includes('read,grep,find,ls'));
     assert.equal(capture.commands[0].type, 'get_state');
     assert.equal(capture.commands[1].type, 'prompt');
+
+    const state = getRuntimeContextState('local-session');
+    assert.equal(state?.runtime, 'pi');
+    assert.equal(state?.source, 'unavailable');
+    assert.equal(state?.currentContext, null);
+    assert.deepEqual(state?.lastTurnUsage, {
+      input_tokens: 3,
+      output_tokens: 2,
+      cache_read_input_tokens: 1,
+      cache_creation_input_tokens: 0,
+      cost_usd: 0.01,
+    });
+    assert.deepEqual(state?.compaction, { status: 'idle' });
+  });
+
+  it('maps native compaction success and keeps estimated post tokens explicitly approximate', async () => {
+    fakeScenario = 'compaction-success';
+    try {
+      await readStream(streamPi({
+        prompt: 'Compact natively',
+        sessionId: 'pi-compact-success',
+        workingDirectory: testDir,
+      }));
+    } finally {
+      fakeScenario = 'normal';
+    }
+
+    const state = getRuntimeContextState('pi-compact-success');
+    assert.equal(state?.source, 'unavailable');
+    assert.equal(state?.currentContext, null);
+    assert.equal(state?.compaction.status, 'completed');
+    if (state?.compaction.status !== 'completed') assert.fail('expected completed Pi compaction');
+    assert.equal(state.compaction.trigger, 'auto');
+    assert.equal(state.compaction.preTokens, 900);
+    assert.equal(state.compaction.postTokens, 240);
+    assert.equal(state.compaction.postTokensEstimated, true);
+    assert.equal(state.compaction.error, null);
+  });
+
+  it('maps native overflow compaction abort to a visible recovery failure', async () => {
+    fakeScenario = 'compaction-aborted';
+    try {
+      await readStream(streamPi({
+        prompt: 'Abort native compact',
+        sessionId: 'pi-compact-aborted',
+        workingDirectory: testDir,
+      }));
+    } finally {
+      fakeScenario = 'normal';
+    }
+
+    const state = getRuntimeContextState('pi-compact-aborted');
+    assert.equal(state?.compaction.status, 'failed');
+    if (state?.compaction.status !== 'failed') assert.fail('expected failed Pi compaction');
+    assert.equal(state.compaction.trigger, 'recovery');
+    assert.match(state.compaction.error, /aborted/);
+  });
+
+  it('maps native manual compaction errors to a visible failure', async () => {
+    fakeScenario = 'compaction-error';
+    try {
+      await readStream(streamPi({
+        prompt: 'Fail native compact',
+        sessionId: 'pi-compact-error',
+        workingDirectory: testDir,
+      }));
+    } finally {
+      fakeScenario = 'normal';
+    }
+
+    const state = getRuntimeContextState('pi-compact-error');
+    assert.equal(state?.compaction.status, 'failed');
+    if (state?.compaction.status !== 'failed') assert.fail('expected failed Pi compaction');
+    assert.equal(state.compaction.trigger, 'manual');
+    assert.equal(state.compaction.error, 'Manual compaction fixture failed');
+  });
+
+  it('rejects a non-aborted native compaction end that has no result', async () => {
+    fakeScenario = 'compaction-missing-result';
+    try {
+      await readStream(streamPi({
+        prompt: 'Missing compact result',
+        sessionId: 'pi-compact-missing-result',
+        workingDirectory: testDir,
+      }));
+    } finally {
+      fakeScenario = 'normal';
+    }
+
+    const state = getRuntimeContextState('pi-compact-missing-result');
+    assert.equal(state?.compaction.status, 'failed');
+    if (state?.compaction.status !== 'failed') assert.fail('expected failed Pi compaction');
+    assert.equal(state.compaction.trigger, 'auto');
+    assert.match(state.compaction.error, /without a result/);
+  });
+
+  it('does not let an ordinary native event impersonate compaction completion', async () => {
+    fakeScenario = 'ordinary-event';
+    try {
+      await readStream(streamPi({
+        prompt: 'Ordinary event',
+        sessionId: 'pi-ordinary-event',
+        workingDirectory: testDir,
+      }));
+    } finally {
+      fakeScenario = 'normal';
+    }
+    assert.deepEqual(getRuntimeContextState('pi-ordinary-event')?.compaction, { status: 'idle' });
   });
 
   it('limits code mode to read-only tools when dangerous permissions are disabled', async () => {
@@ -161,21 +291,53 @@ describe('streamPi', () => {
 
   it('invalidates a native resume id and retries with fallback history before the turn starts', async () => {
     let invalidated = false;
+    const loadReasons: string[] = [];
     const payload = await readStream(streamPi({
       prompt: 'Continue',
       sessionId: 'local-session',
       sdkSessionId: 'bad-session',
       workingDirectory: testDir,
-      fallbackConversationHistory: [{ role: 'user', content: 'Earlier context' }],
+      loadEmergencyConversationHistory: (reason) => {
+        loadReasons.push(reason);
+        return [{ role: 'user', content: 'Earlier context' }];
+      },
       onSessionIdInvalidated: () => { invalidated = true; },
     }));
 
     assert.equal(invalidated, true);
+    assert.equal(loadReasons.length, 1);
+    assert.match(loadReasons[0], /^native_resume_failed:No session found matching/);
     assert.match(payload, /Pi session reset/);
     assert.match(payload, /Pi answer/);
     const capture = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as { argv: string[]; commands: Array<{ type: string; message?: string }> };
     assert.equal(capture.argv.includes('--session'), false);
     assert.match(capture.commands.find((command) => command.type === 'prompt')?.message || '', /Earlier context/);
+  });
+
+  it('does not load or inject emergency history during a successful native resume', async () => {
+    let loadCalls = 0;
+    const payload = await readStream(streamPi({
+      prompt: 'Continue native Pi session',
+      sessionId: 'pi-resume-success',
+      sdkSessionId: 'valid-session',
+      workingDirectory: testDir,
+      conversationHistory: [{ role: 'assistant', content: 'must not be injected' }],
+      loadEmergencyConversationHistory: () => {
+        loadCalls += 1;
+        return [{ role: 'assistant', content: 'must not be loaded' }];
+      },
+    }));
+
+    assert.match(payload, /Pi answer/);
+    assert.equal(loadCalls, 0);
+    const capture = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as {
+      argv: string[];
+      commands: Array<{ type: string; message?: string }>;
+    };
+    assert.ok(capture.argv.includes('--session'));
+    const nativePrompt = capture.commands.find((command) => command.type === 'prompt')?.message || '';
+    assert.match(nativePrompt, /Continue native Pi session/);
+    assert.doesNotMatch(nativePrompt, /must not be injected|must not be loaded/);
   });
 
   it('preserves a native resume id for non-session startup failures', async () => {

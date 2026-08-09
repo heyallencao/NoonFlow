@@ -157,7 +157,14 @@ export function ChatView({ sessionId }: ChatViewProps) {
   } = useChatImageNotices({ sessionId });
 
   // Context usage bar
-  const { totalTokens, usedPct, contextWindowSize } = useContextUsage(sessionId, currentModel, currentProviderId);
+  const {
+    totalTokens,
+    usedPct,
+    contextWindowSize,
+    lastTurnUsage,
+    source: contextSource,
+    compaction,
+  } = useContextUsage(sessionId, currentModel, currentProviderId, currentAssistantRuntime);
 
   const {
     loadingMore,
@@ -378,6 +385,9 @@ export function ChatView({ sessionId }: ChatViewProps) {
                 totalTokens={totalTokens}
                 usedPct={usedPct}
                 contextWindowSize={contextWindowSize}
+                lastTurnUsage={lastTurnUsage}
+                source={contextSource}
+                compaction={compaction}
                 isStreaming={isStreaming}
               />
             </div>

@@ -2,12 +2,71 @@ import {
   parseContextWindowOverrides,
   resolveContextWindowSize,
 } from '@/lib/default-context-sizes';
-import type { Message, SessionStreamSnapshot, TokenUsage } from '@/types';
+import type {
+  AssistantRuntime,
+  Message,
+  RuntimeCompactionState,
+  RuntimeContextSource,
+  RuntimeContextState,
+  SessionStreamSnapshot,
+  TokenUsage,
+} from '@/types';
 
 export interface ContextUsageResult {
-  totalTokens: number;
-  usedPct: number;
-  contextWindowSize: number;
+  totalTokens: number | null;
+  usedPct: number | null;
+  contextWindowSize: number | null;
+  lastTurnUsage: TokenUsage | null;
+  source: RuntimeContextSource;
+  compaction: RuntimeCompactionState;
+}
+
+export interface CompactionDisplay {
+  status: Exclude<RuntimeCompactionState['status'], 'idle'>;
+  label: string;
+  detail: string;
+}
+
+export function buildCompactionDisplay(
+  compaction: RuntimeCompactionState,
+): CompactionDisplay | null {
+  if (compaction.status === 'idle') return null;
+
+  const trigger = compaction.trigger === 'recovery'
+    ? '窗口溢出恢复'
+    : compaction.trigger === 'manual'
+      ? '手动触发'
+      : compaction.trigger === 'auto'
+        ? '自动触发'
+        : '原生事件';
+  const tokenTransition = typeof compaction.preTokens === 'number'
+    && typeof compaction.postTokens === 'number'
+    ? `${compaction.preTokens.toLocaleString()} → ${compaction.postTokensEstimated ? '约 ' : ''}${compaction.postTokens.toLocaleString()} tokens`
+    : null;
+  const startedAt = typeof compaction.startedAt === 'number'
+    ? `开始 ${new Date(compaction.startedAt).toISOString()}`
+    : null;
+  const completedAt = typeof compaction.completedAt === 'number'
+    ? `结束 ${new Date(compaction.completedAt).toISOString()}`
+    : null;
+  const details = [trigger, tokenTransition, startedAt, completedAt, compaction.error]
+    .filter((value): value is string => Boolean(value));
+
+  if (compaction.status === 'compacting') {
+    return { status: 'compacting', label: '压缩中', detail: details.join(' · ') };
+  }
+  if (compaction.status === 'completed') {
+    return {
+      status: 'completed',
+      label: tokenTransition ? `压缩完成 ${tokenTransition}` : '压缩完成',
+      detail: details.join(' · '),
+    };
+  }
+  return {
+    status: 'failed',
+    label: compaction.error ? `压缩失败：${compaction.error}` : '压缩失败',
+    detail: details.join(' · '),
+  };
 }
 
 export function parseTokenUsage(raw: string | null | undefined): TokenUsage | null {
@@ -75,5 +134,40 @@ export function calculateContextUsage(
   const contextWindowSize = resolveContextWindowSize(model, overrides, modelLabel);
   const usedPct = calcContextUsagePct(total, contextWindowSize);
 
-  return { totalTokens: total, usedPct, contextWindowSize };
+  return {
+    totalTokens: total,
+    usedPct,
+    contextWindowSize,
+    lastTurnUsage: effectiveUsage,
+    source: 'estimated',
+    compaction: { status: 'idle' },
+  };
+}
+
+export function resolveRuntimeContextUsage(
+  state: RuntimeContextState | null,
+  runtime: AssistantRuntime,
+  displayFallbackWindow: number,
+): ContextUsageResult {
+  if (state?.runtime === runtime && state.source === 'native' && state.currentContext) {
+    return {
+      totalTokens: state.currentContext.usedTokens,
+      usedPct: state.currentContext.percentage,
+      contextWindowSize: state.currentContext.contextWindowTokens ?? displayFallbackWindow,
+      lastTurnUsage: state.lastTurnUsage,
+      source: 'native',
+      compaction: state.compaction,
+    };
+  }
+
+  return {
+    totalTokens: null,
+    usedPct: null,
+    contextWindowSize: displayFallbackWindow,
+    lastTurnUsage: state?.runtime === runtime ? state.lastTurnUsage : null,
+    source: 'unavailable',
+    compaction: state?.runtime === runtime
+      ? state.compaction
+      : { status: 'idle' },
+  };
 }

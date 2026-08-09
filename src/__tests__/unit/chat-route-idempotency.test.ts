@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { installFakeCodexCli, readFakeCodexRequests } from './helpers/fake-codex-cli';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'monolith-chat-route-idempotency-'));
 process.env.CLAUDE_GUI_DATA_DIR = tmpDir;
@@ -11,12 +12,13 @@ const originalHome = process.env.HOME;
 const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
 const originalCodexBackend = process.env.MONOLITH_CODEX_BACKEND;
 const originalPublicCodexBackend = process.env.NEXT_PUBLIC_MONOLITH_CODEX_BACKEND;
+const fakeCodexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'noonflow-idempotency-codex-'));
+const fakeCodex = installFakeCodexCli(fakeCodexHome);
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const db = require('../../lib/db') as typeof import('../../lib/db');
 const route = require('../../app/api/chat/route') as typeof import('../../app/api/chat/route');
 const assistantRuntimes = require('../../lib/assistant-runtimes') as typeof import('../../lib/assistant-runtimes');
-const codexClient = require('../../lib/codex-client') as typeof import('../../lib/codex-client');
 
 const originalFindCodexBinary = assistantRuntimes.assistantRuntimePlatform.findCodexBinary;
 const originalGetCodexVersion = assistantRuntimes.assistantRuntimePlatform.getCodexVersion;
@@ -48,18 +50,27 @@ async function readStringStream(stream: ReadableStream<string> | null): Promise<
   return payload;
 }
 
-async function* createThreadEventsStream(
-  events: Array<Record<string, unknown>>,
-): AsyncGenerator<Record<string, unknown>> {
-  for (const event of events) {
-    yield event;
-  }
+async function prepareRouteFake(threadId: string): Promise<void> {
+  process.env.HOME = fakeCodexHome;
+  process.env.MONOLITH_CODEX_BACKEND = 'app-server';
+  delete process.env.NEXT_PUBLIC_MONOLITH_CODEX_BACKEND;
+  process.env.OPENAI_API_KEY = 'test-openai-key';
+  process.env.FAKE_CODEX_CAPTURE = fakeCodex.capturePath;
+  process.env.FAKE_CODEX_THREAD_ID = threadId;
+  delete process.env.FAKE_CODEX_SCENARIO;
+  fs.rmSync(fakeCodex.capturePath, { force: true });
+  assistantRuntimes.assistantRuntimePlatform.findCodexBinary = () => fakeCodex.binaryPath;
+  assistantRuntimes.assistantRuntimePlatform.getCodexVersion = async () => 'codex-cli 0.145.0';
+  const { clearShellEnvCache } = await import('../../lib/environment');
+  clearShellEnvCache();
 }
 
 afterEach(() => {
+  delete process.env.FAKE_CODEX_CAPTURE;
+  delete process.env.FAKE_CODEX_SCENARIO;
+  delete process.env.FAKE_CODEX_THREAD_ID;
   assistantRuntimes.assistantRuntimePlatform.findCodexBinary = originalFindCodexBinary;
   assistantRuntimes.assistantRuntimePlatform.getCodexVersion = originalGetCodexVersion;
-  codexClient.__setCodexCtorForTests(null);
   if (originalCodexBackend === undefined) {
     delete process.env.MONOLITH_CODEX_BACKEND;
   } else {
@@ -85,6 +96,7 @@ afterEach(() => {
 
 after(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
+  fs.rmSync(fakeCodexHome, { recursive: true, force: true });
 });
 
 describe('/api/chat request idempotency by client_message_id', () => {
@@ -195,34 +207,7 @@ describe('/api/chat request idempotency by client_message_id', () => {
   });
 
   it('retries a failed assistant turn with the same client_message_id', async () => {
-    process.env.MONOLITH_CODEX_BACKEND = 'sdk-system-cli';
-    delete process.env.NEXT_PUBLIC_MONOLITH_CODEX_BACKEND;
-    process.env.OPENAI_API_KEY = 'test-openai-key';
-    assistantRuntimes.assistantRuntimePlatform.findCodexBinary = () => '/nonexistent/codex';
-    assistantRuntimes.assistantRuntimePlatform.getCodexVersion = async () => 'test-version';
-
-    class FakeCodex {
-      startThread() {
-        return {
-          runStreamed: async () => ({
-            events: createThreadEventsStream([
-              { type: 'thread.started', thread_id: 'thread-retry' },
-              { type: 'turn.started' },
-              {
-                type: 'item.completed',
-                item: {
-                  id: 'item_1',
-                  details: { type: 'agent_message', text: 'retry answer' },
-                },
-              },
-              { type: 'turn.completed', usage: { input_tokens: 3, output_tokens: 5 } },
-            ]),
-          }),
-        };
-      }
-    }
-
-    codexClient.__setCodexCtorForTests(FakeCodex as never);
+    await prepareRouteFake('thread-retry');
 
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'monolith-idempotent-error-retry-'));
     const session = db.createSession('Retry Failed Turn', '', '', workspaceDir, 'code', '', 'chat', 'codex');
@@ -276,44 +261,17 @@ describe('/api/chat request idempotency by client_message_id', () => {
     assert.equal(messages[1]?.id, placeholder.id);
     assert.equal(messages[1]?.status, 'completed');
     assert.equal(messages[1]?.persisted_revision, 1);
-    assert.match(messages[1]?.content || '', /retry answer/);
+    assert.match(messages[1]?.content || '', /done-1/);
     assert.doesNotMatch(messages[1]?.content || '', /stale failed answer/);
 
     const parts = db.getMessageParts(placeholder.id);
     assert.equal(parts.length, 1);
-    assert.equal(parts[0]?.content, 'retry answer');
+    assert.equal(parts[0]?.content, 'done-1');
     assert.equal(parts[0]?.is_final, 1);
   });
 
   it('restarts an orphaned streaming assistant placeholder with the same client_message_id', async () => {
-    process.env.MONOLITH_CODEX_BACKEND = 'sdk-system-cli';
-    delete process.env.NEXT_PUBLIC_MONOLITH_CODEX_BACKEND;
-    process.env.OPENAI_API_KEY = 'test-openai-key';
-    assistantRuntimes.assistantRuntimePlatform.findCodexBinary = () => '/nonexistent/codex';
-    assistantRuntimes.assistantRuntimePlatform.getCodexVersion = async () => 'test-version';
-
-    class FakeCodex {
-      startThread() {
-        return {
-          runStreamed: async () => ({
-            events: createThreadEventsStream([
-              { type: 'thread.started', thread_id: 'thread-orphan' },
-              { type: 'turn.started' },
-              {
-                type: 'item.completed',
-                item: {
-                  id: 'item_1',
-                  details: { type: 'agent_message', text: 'recovered answer' },
-                },
-              },
-              { type: 'turn.completed', usage: { input_tokens: 4, output_tokens: 6 } },
-            ]),
-          }),
-        };
-      }
-    }
-
-    codexClient.__setCodexCtorForTests(FakeCodex as never);
+    await prepareRouteFake('thread-orphan');
 
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'monolith-idempotent-orphaned-streaming-'));
     const session = db.createSession('Retry Orphaned Streaming Turn', '', '', workspaceDir, 'code', '', 'chat', 'codex');
@@ -347,75 +305,8 @@ describe('/api/chat request idempotency by client_message_id', () => {
   });
 
   it('starts a fresh Codex turn when only the default model is backfilled onto an empty session model', async () => {
-    process.env.OPENAI_API_KEY = 'test-openai-key';
-    process.env.MONOLITH_CODEX_BACKEND = 'sdk-system-cli';
-    delete process.env.NEXT_PUBLIC_MONOLITH_CODEX_BACKEND;
+    await prepareRouteFake('thread-default-model-started');
     db.setSetting('codex_default_model', 'gpt-5-codex');
-    assistantRuntimes.assistantRuntimePlatform.getCodexVersion = async () => 'test-version';
-
-    const captured: {
-      resumeCalls: number;
-      startCalls: number;
-      resumeInput?: unknown;
-    } = {
-      resumeCalls: 0,
-      startCalls: 0,
-    };
-
-    async function* createThreadEventsStream(
-      events: Array<Record<string, unknown>>,
-    ): AsyncGenerator<Record<string, unknown>> {
-      for (const event of events) {
-        yield event;
-      }
-    }
-
-    class FakeCodex {
-      startThread() {
-        captured.startCalls += 1;
-        return {
-          runStreamed: async () => ({
-            events: createThreadEventsStream([
-              { type: 'thread.started', thread_id: 'thread-default-model-started' },
-              { type: 'turn.started' },
-              {
-                type: 'item.completed',
-                item: {
-                  id: 'item_1',
-                  details: { type: 'agent_message', text: 'fresh turn started' },
-                },
-              },
-              { type: 'turn.completed', usage: { input_tokens: 2, output_tokens: 4 } },
-            ]),
-          }),
-        };
-      }
-
-      resumeThread() {
-        captured.resumeCalls += 1;
-        return {
-          runStreamed: async (input: unknown) => {
-            captured.resumeInput = input;
-            return {
-              events: createThreadEventsStream([
-                { type: 'thread.started', thread_id: 'thread-existing-default-model' },
-                { type: 'turn.started' },
-                {
-                  type: 'item.completed',
-                  item: {
-                    id: 'item_1',
-                  details: { type: 'agent_message', text: 'resume should not run' },
-                },
-              },
-              { type: 'turn.completed', usage: { input_tokens: 2, output_tokens: 4 } },
-              ]),
-            };
-          },
-        };
-      }
-    }
-
-    codexClient.__setCodexCtorForTests(FakeCodex as never);
 
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'monolith-default-model-resume-workspace-'));
     const session = db.createSession('Resume Default Model Backfill', '', '', workspaceDir, 'code', '', 'chat', 'codex');
@@ -434,11 +325,11 @@ describe('/api/chat request idempotency by client_message_id', () => {
     assert.equal(response.status, 200);
 
     const payload = await readStringStream(response.body as ReadableStream<string> | null);
-    assert.match(payload, /"type":"text","data":"fresh turn started"/);
+    assert.match(payload, /"type":"text","data":"done-1"/);
     assert.doesNotMatch(payload, /Session fallback/);
-    assert.equal(captured.resumeCalls, 0);
-    assert.equal(captured.startCalls, 1);
-    assert.equal(captured.resumeInput, undefined);
+    const methods = readFakeCodexRequests(fakeCodex.capturePath).map((entry) => entry.method);
+    assert.equal(methods.filter((method) => method === 'thread/resume').length, 0);
+    assert.equal(methods.filter((method) => method === 'thread/start').length, 1);
 
     const updatedSession = db.getSession(session.id)!;
     assert.equal(updatedSession.model, 'gpt-5-codex');

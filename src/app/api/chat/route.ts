@@ -14,7 +14,6 @@ import { createCheckpointFlusher } from '@/lib/chat/persistence';
 import { wrapStreamWithSSEEvents } from '@/lib/chat/persisted-sse';
 import { buildConversationHistoryForPrompt } from '@/lib/chat-route-history';
 import { normalizeCodexModel, resolvePreferredCodexModel } from '@/lib/codex-model';
-import { getCodexBackend } from '@/lib/codex-backend';
 import { getChatRolloutMode } from '@/lib/chat-rollout';
 import { evaluateCodexResumeInvalidation } from '@/lib/codex-resume-contract';
 import { getProjectUploadDir } from '@/lib/upload-paths';
@@ -22,7 +21,6 @@ import { WIDGET_SYSTEM_PROMPT } from '@/lib/widget-guidelines';
 import { shouldInjectWidgetPrompt } from '@/lib/widget-heuristics';
 import {
   buildContextBudgetLogFields,
-  formatContextLimitExceededMessage,
   normalizeContextLimitErrorMessage,
   prepareConversationContext,
 } from '@/lib/context-budget';
@@ -472,7 +470,7 @@ export async function POST(request: NextRequest) {
       session_id,
       rollout_mode: chatRolloutMode,
       assistant_runtime: effectiveRuntime,
-      codex_backend: effectiveRuntime === 'codex' ? getCodexBackend() : null,
+      codex_backend: effectiveRuntime === 'codex' ? 'app-server' : null,
       mode: mode || session.mode || 'code',
       model: effectiveModel || '',
       requestedModel,
@@ -588,6 +586,9 @@ export async function POST(request: NextRequest) {
 
     const effectiveWorkingDirectory = session.sdk_cwd || session.working_directory || undefined;
     let codexResumeSessionId = session.sdk_session_id || undefined;
+    let codexResumeFallbackReason: string | null = codexResumeSessionId
+      ? null
+      : 'native_resume_missing';
     if (effectiveRuntime === 'codex' && codexResumeSessionId) {
       const invalidationReasons = evaluateCodexResumeInvalidation({
         resumeSessionId: codexResumeSessionId,
@@ -604,6 +605,7 @@ export async function POST(request: NextRequest) {
       if (invalidationReasons.length > 0) {
         sessionStateManager.updateSessionState(session_id, { sdkSessionId: '' });
         codexResumeSessionId = undefined;
+        codexResumeFallbackReason = `native_resume_invalid:${invalidationReasons.join(',')}`;
         console.info('[chat API] invalidated codex resume session', {
           sessionId: session_id,
           reasons: invalidationReasons,
@@ -611,26 +613,37 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const claudeResumeActive = Boolean(session.sdk_session_id)
-      && (!effectiveWorkingDirectory || fs.existsSync(effectiveWorkingDirectory));
+    const workingDirectoryAvailable = !effectiveWorkingDirectory || fs.existsSync(effectiveWorkingDirectory);
+    const claudeResumeActive = Boolean(session.sdk_session_id) && workingDirectoryAvailable;
     const piResumeActive = effectiveRuntime === 'pi'
       && Boolean(session.sdk_session_id)
-      && (!effectiveWorkingDirectory || fs.existsSync(effectiveWorkingDirectory));
+      && workingDirectoryAvailable;
     const nativeResumeActive = effectiveRuntime === 'codex'
       ? Boolean(codexResumeSessionId)
       : effectiveRuntime === 'pi'
       ? piResumeActive
       : claudeResumeActive;
+    const initialFallbackReason = effectiveRuntime === 'codex'
+      ? codexResumeFallbackReason
+      : session.sdk_session_id && !workingDirectoryAvailable
+        ? 'working_directory_missing'
+        : nativeResumeActive
+          ? null
+          : 'native_resume_missing';
 
-    // Load recent conversation history from DB as fallback context.
-    // This is used when SDK session resume is unavailable or fails,
-    // so the model still has conversation context.
-    const { messages: recentMsgs } = getMessages(session_id, { limit: 50 });
-    const rawHistoryMsgs = buildConversationHistoryForPrompt(
-      recentMsgs,
-      userMessage.id,
-      sanitizedClientMessageId,
-    );
+    const loadRawEmergencyHistory = () => {
+      const { messages: recentMessages } = getMessages(session_id, { limit: 50 });
+      return buildConversationHistoryForPrompt(
+        recentMessages,
+        userMessage.id,
+        sanitizedClientMessageId,
+      );
+    };
+    // Every native runtime reads DB history only after resume is known to be
+    // absent/invalid, or lazily after a later native resume failure.
+    const rawHistoryMsgs = !nativeResumeActive
+      ? loadRawEmergencyHistory()
+      : [];
     const generativeUIEnabled = shouldInjectWidgetPrompt({
       runtime: effectiveRuntime,
       mode: effectiveMode,
@@ -644,14 +657,42 @@ export async function POST(request: NextRequest) {
         ? `${finalSystemPrompt}\n\n${WIDGET_SYSTEM_PROMPT}`
         : WIDGET_SYSTEM_PROMPT;
     }
-    const contextBudget = prepareConversationContext({
+    const prepareEmergencyHistory = (
+      reason: string,
+      suppliedHistory?: Array<{ role: 'user' | 'assistant'; content: string }>,
+    ) => {
+      const rawHistory = suppliedHistory ?? loadRawEmergencyHistory();
+      const prepared = prepareConversationContext({
+        runtime: effectiveRuntime === 'codex' ? 'codex' : effectiveRuntime === 'pi' ? 'pi' : 'claude',
+        prompt: content,
+        systemPrompt: finalSystemPrompt,
+        conversationHistory: rawHistory,
+        files: fileAttachments,
+        useConversationHistory: rawHistory.length > 0,
+        includeSystemPrompt: true,
+        nativeResumeActive: false,
+      });
+      console.warn('[chat API] emergency conversation context', {
+        session: session_id,
+        runtime: effectiveRuntime,
+        reason,
+        history_messages_before: rawHistory.length,
+        history_messages_after: prepared.conversationHistory.length,
+        characters_trimmed: prepared.compactionApplied || prepared.hardTrimApplied,
+      });
+      return prepared;
+    };
+
+    const contextBudget = initialFallbackReason
+      ? prepareEmergencyHistory(initialFallbackReason, rawHistoryMsgs)
+      : prepareConversationContext({
       runtime: effectiveRuntime === 'codex' ? 'codex' : effectiveRuntime === 'pi' ? 'pi' : 'claude',
       prompt: content,
       systemPrompt: finalSystemPrompt,
-      conversationHistory: rawHistoryMsgs,
+      conversationHistory: [],
       files: fileAttachments,
-      useConversationHistory: !nativeResumeActive,
-      includeSystemPrompt: effectiveRuntime !== 'codex' || !nativeResumeActive,
+      useConversationHistory: false,
+      includeSystemPrompt: effectiveRuntime !== 'codex',
       nativeResumeActive,
     });
     console.info('[chat API] context budget', {
@@ -667,27 +708,12 @@ export async function POST(request: NextRequest) {
         )]
       : [];
 
-    if (contextBudget.breakdown.total >= contextBudget.limits.hardLimit) {
-      const errorMessage = formatContextLimitExceededMessage({
-        breakdown: contextBudget.breakdown,
-        nativeResumeActive,
-        officialCompactAttempted: contextBudget.officialCompactAttempted,
-        localCompactionAttempted: contextBudget.localCompactionAttempted,
-      });
-      const errorStream = createReplaySSEStream([
-        { type: 'error', data: errorMessage },
-        { type: 'done', data: '' },
-      ]);
-      finishLockedRequest();
-      return buildChatSSEStreamResponse(
-        errorStream,
-        userPersistedAck,
-        Promise.resolve(null),
-        preStreamEvents,
-      );
-    }
-
     const historyMsgs = contextBudget.conversationHistory;
+    let lazilyPreparedEmergencyHistory: ReturnType<typeof prepareConversationContext> | null = null;
+    const loadEmergencyConversationHistory = async (reason: string) => {
+      lazilyPreparedEmergencyHistory ??= prepareEmergencyHistory(reason);
+      return lazilyPreparedEmergencyHistory.conversationHistory;
+    };
 
     await agentOrchestrator.startSession({
       sessionId: session_id,
@@ -717,6 +743,7 @@ export async function POST(request: NextRequest) {
           permissionMode,
           files: fileAttachments,
           conversationHistory: historyMsgs,
+          loadEmergencyConversationHistory,
           onSessionIdInvalidated: () => {
             try { sessionStateManager.updateSessionState(session_id, { sdkSessionId: '' }); } catch { /* best effort */ }
           },
@@ -736,7 +763,7 @@ export async function POST(request: NextRequest) {
           permissionMode,
           files: fileAttachments,
           conversationHistory: historyMsgs,
-          fallbackConversationHistory: rawHistoryMsgs,
+          loadEmergencyConversationHistory,
           onSessionIdInvalidated: () => {
             try { sessionStateManager.updateSessionState(session_id, { sdkSessionId: '' }); } catch { /* best effort */ }
           },
@@ -759,6 +786,7 @@ export async function POST(request: NextRequest) {
           toolTimeoutSeconds: toolTimeout || 300,
           provider: resolvedProvider,
           conversationHistory: historyMsgs,
+          loadEmergencyConversationHistory,
           onRuntimeStatusChange: (status: string) => {
             try { sessionStateManager.updateSessionState(session_id, { runtimeStatus: status }); } catch { /* best effort */ }
           },

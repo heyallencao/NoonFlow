@@ -195,6 +195,58 @@ export interface TokenUsage {
   cost_usd?: number;
 }
 
+export type RuntimeContextSource = 'native' | 'estimated' | 'unavailable';
+
+export interface RuntimeContextTokenState {
+  usedTokens: number;
+  contextWindowTokens: number | null;
+  percentage: number | null;
+}
+
+export type RuntimeCompactionTrigger = 'auto' | 'manual' | 'recovery';
+
+export type RuntimeCompactionState =
+  | { status: 'idle' }
+  | {
+      status: 'compacting';
+      trigger: RuntimeCompactionTrigger | null;
+      preTokens: number | null;
+      postTokens: null;
+      postTokensEstimated: false;
+      startedAt: number;
+      completedAt: null;
+      error: null;
+    }
+  | {
+      status: 'completed';
+      trigger: RuntimeCompactionTrigger;
+      preTokens: number | null;
+      postTokens: number | null;
+      postTokensEstimated: boolean;
+      startedAt: number;
+      completedAt: number;
+      error: null;
+    }
+  | {
+      status: 'failed';
+      trigger: RuntimeCompactionTrigger | null;
+      preTokens: number | null;
+      postTokens: null;
+      postTokensEstimated: false;
+      startedAt: number;
+      completedAt: number;
+      error: string;
+    };
+
+export interface RuntimeContextState {
+  runtime: AssistantRuntime;
+  currentContext: RuntimeContextTokenState | null;
+  lastTurnUsage: TokenUsage | null;
+  source: RuntimeContextSource;
+  compaction: RuntimeCompactionState;
+  updatedAt: number;
+}
+
 // ==========================================
 // API Request Types
 // ==========================================
@@ -802,6 +854,10 @@ export interface ClaudeStreamOptions {
   provider?: ApiProvider;
   /** Recent conversation history from DB — used as fallback context when SDK resume is unavailable or fails */
   conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  /** Lazily loads and trims emergency DB history only after native resume fails. */
+  loadEmergencyConversationHistory?: (
+    reason: string,
+  ) => Array<{ role: 'user' | 'assistant'; content: string }> | Promise<Array<{ role: 'user' | 'assistant'; content: string }>>;
   onRuntimeStatusChange?: (status: string) => void;
   onContextBudgetRecovery?: (metrics: ContextBudgetRecoveryMetrics) => void | Promise<void>;
 }
@@ -817,7 +873,10 @@ export interface PiStreamOptions {
   permissionMode?: string;
   files?: FileAttachment[];
   conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
-  fallbackConversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  /** Lazily loads and trims emergency DB history only after native resume fails. */
+  loadEmergencyConversationHistory?: (
+    reason: string,
+  ) => Array<{ role: 'user' | 'assistant'; content: string }> | Promise<Array<{ role: 'user' | 'assistant'; content: string }>>;
   onSessionIdInvalidated?: () => void;
   onRuntimeStatusChange?: (status: string) => void;
 }

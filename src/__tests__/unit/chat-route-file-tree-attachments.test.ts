@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getProjectUploadDir } from '../../lib/upload-paths';
+import { installFakeCodexCli, readFakeCodexRequests } from './helpers/fake-codex-cli';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'monolith-chat-route-file-tree-attachments-'));
 process.env.CLAUDE_GUI_DATA_DIR = tmpDir;
@@ -12,13 +13,13 @@ const originalHome = process.env.HOME;
 const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
 const originalCodexBackend = process.env.MONOLITH_CODEX_BACKEND;
 const originalPublicCodexBackend = process.env.NEXT_PUBLIC_MONOLITH_CODEX_BACKEND;
+const fakeCodexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'noonflow-file-route-codex-'));
+const fakeCodex = installFakeCodexCli(fakeCodexHome);
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const db = require('../../lib/db') as typeof import('../../lib/db');
 const route = require('../../app/api/chat/route') as typeof import('../../app/api/chat/route');
 const assistantRuntimes = require('../../lib/assistant-runtimes') as typeof import('../../lib/assistant-runtimes');
-const codexClient = require('../../lib/codex-client') as typeof import('../../lib/codex-client');
-
 const originalFindCodexBinary = assistantRuntimes.assistantRuntimePlatform.findCodexBinary;
 const originalGetCodexVersion = assistantRuntimes.assistantRuntimePlatform.getCodexVersion;
 
@@ -39,18 +40,11 @@ async function readStringStream(stream: ReadableStream<string> | null): Promise<
   return payload;
 }
 
-async function* createThreadEventsStream(
-  events: Array<Record<string, unknown>>,
-): AsyncGenerator<Record<string, unknown>> {
-  for (const event of events) {
-    yield event;
-  }
-}
-
 afterEach(() => {
+  delete process.env.FAKE_CODEX_CAPTURE;
+  delete process.env.FAKE_CODEX_SCENARIO;
   assistantRuntimes.assistantRuntimePlatform.findCodexBinary = originalFindCodexBinary;
   assistantRuntimes.assistantRuntimePlatform.getCodexVersion = originalGetCodexVersion;
-  codexClient.__setCodexCtorForTests(null);
   if (originalCodexBackend === undefined) {
     delete process.env.MONOLITH_CODEX_BACKEND;
   } else {
@@ -76,43 +70,21 @@ afterEach(() => {
 
 after(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
+  fs.rmSync(fakeCodexHome, { recursive: true, force: true });
 });
 
 describe('/api/chat file tree attachments', () => {
   it('keeps the workspace path for the runtime while still persisting an upload copy', async () => {
-    process.env.MONOLITH_CODEX_BACKEND = 'sdk-system-cli';
+    process.env.MONOLITH_CODEX_BACKEND = 'app-server';
     delete process.env.NEXT_PUBLIC_MONOLITH_CODEX_BACKEND;
     process.env.OPENAI_API_KEY = 'test-openai-key';
-    assistantRuntimes.assistantRuntimePlatform.findCodexBinary = () => '/nonexistent/codex';
-    assistantRuntimes.assistantRuntimePlatform.getCodexVersion = async () => 'test-version';
-
-    let capturedInput: unknown;
-
-    class FakeCodex {
-      startThread() {
-        return {
-          runStreamed: async (input: unknown) => {
-            capturedInput = input;
-            return {
-              events: createThreadEventsStream([
-                { type: 'thread.started', thread_id: 'thread-file-tree-attachment' },
-                { type: 'turn.started' },
-                {
-                  type: 'item.completed',
-                  item: {
-                    id: 'item_1',
-                    details: { type: 'agent_message', text: 'file attached' },
-                  },
-                },
-                { type: 'turn.completed', usage: { input_tokens: 2, output_tokens: 4 } },
-              ]),
-            };
-          },
-        };
-      }
-    }
-
-    codexClient.__setCodexCtorForTests(FakeCodex as never);
+    process.env.HOME = fakeCodexHome;
+    process.env.FAKE_CODEX_CAPTURE = fakeCodex.capturePath;
+    fs.rmSync(fakeCodex.capturePath, { force: true });
+    assistantRuntimes.assistantRuntimePlatform.findCodexBinary = () => fakeCodex.binaryPath;
+    assistantRuntimes.assistantRuntimePlatform.getCodexVersion = async () => 'codex-cli 0.145.0';
+    const { clearShellEnvCache } = await import('../../lib/environment');
+    clearShellEnvCache();
 
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'monolith-file-tree-workspace-'));
     const sourcePath = path.join(workspaceDir, 'src', 'demo.ts');
@@ -144,8 +116,9 @@ describe('/api/chat file tree attachments', () => {
     assert.equal(response.status, 200);
     await readStringStream(response.body as ReadableStream<string> | null);
 
-    assert.equal(typeof capturedInput, 'string');
-    assert.match(capturedInput as string, new RegExp(sourcePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    const turnStart = readFakeCodexRequests(fakeCodex.capturePath)
+      .find((entry) => entry.method === 'turn/start') as { params?: { input?: Array<{ text?: string }> } };
+    assert.match(turnStart.params?.input?.[0]?.text || '', new RegExp(sourcePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 
     const { messages } = db.getMessages(session.id, { limit: 10 });
     const userMessage = messages.find((message: { role: string }) => message.role === 'user');
