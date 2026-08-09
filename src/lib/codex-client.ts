@@ -28,6 +28,7 @@ import {
   updateRuntimeContextState,
 } from './context-runtime';
 import { registerPendingPermission } from './permission-registry';
+import { RuntimeActivityAdapter } from './agent-runtime/sdk-adapter';
 import type { FileAttachment, SSEEvent, TokenUsage } from '@/types';
 import { SETTING_KEYS } from '@/types';
 
@@ -632,6 +633,7 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
       let pendingFinalAgentMessage: { id: string; text: string } | null = null;
       let emittedCommentaryCount = 0;
       let emergencyConversationHistory = conversationHistory;
+      const activityAdapter = new RuntimeActivityAdapter('codex', sessionId);
       const reasoningEnabled = getSetting(SETTING_KEYS.CHAT_REASONING_ENABLED) === 'true';
       setRuntimeContextState(sessionId, createUnavailableRuntimeContextState('codex'));
 
@@ -740,6 +742,10 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
         attemptState: CodexAttemptState,
       ) => {
         attemptState.sawConversationEvent = true;
+
+        for (const activity of activityAdapter.adapt(event)) {
+          emitEvent({ type: 'activity.updated', data: JSON.stringify(activity) });
+        }
 
         switch (event.type) {
           case 'item.started':

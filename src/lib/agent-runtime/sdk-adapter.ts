@@ -1,10 +1,18 @@
 import type {
+  AssistantRuntime,
   AssistantPersistedEventData,
+  ChildActivity,
+  ChildActivityStatus,
   PermissionRequestEvent,
   SSEEvent,
   TokenUsage,
   UserPersistedEventData,
 } from '@/types';
+import {
+  getCodexChildActivityId,
+  mapCodexAgentStateActivities,
+  mapCodexChildActivityEvent,
+} from '@/lib/codex/event-mapper';
 import {
   createEventMetadata,
   type AgentEvent,
@@ -22,6 +30,268 @@ function tryParseJson<T>(value: string): T | null {
     return JSON.parse(value) as T;
   } catch {
     return null;
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : null;
+}
+
+function asString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+const CHILD_ACTIVITY_STATUSES = new Set<ChildActivityStatus>([
+  'running',
+  'waiting',
+  'completed',
+  'failed',
+  'stopped',
+]);
+
+function parseChildActivity(value: string): ChildActivity | null {
+  const payload = tryParseJson<Record<string, unknown>>(value);
+  const runtime = asString(payload?.runtime);
+  const status = asString(payload?.status) as ChildActivityStatus;
+  const id = asString(payload?.id);
+  const kind = asString(payload?.kind);
+  const title = asString(payload?.title);
+  const startedAt = payload?.startedAt;
+  const updatedAt = payload?.updatedAt;
+  if (
+    !id
+    || (runtime !== 'claude_code' && runtime !== 'codex' && runtime !== 'pi')
+    || !kind
+    || !title
+    || !CHILD_ACTIVITY_STATUSES.has(status)
+    || typeof startedAt !== 'number'
+    || !Number.isFinite(startedAt)
+    || typeof updatedAt !== 'number'
+    || !Number.isFinite(updatedAt)
+  ) {
+    return null;
+  }
+  const parentId = asString(payload?.parentId);
+  const summary = asString(payload?.summary);
+  return {
+    id,
+    ...(parentId ? { parentId } : {}),
+    runtime,
+    kind,
+    title,
+    status,
+    ...(summary ? { summary } : {}),
+    startedAt,
+    updatedAt,
+  };
+}
+
+function normalizeClaudeStatus(value: unknown): ChildActivityStatus {
+  switch (asString(value)) {
+    case 'completed': return 'completed';
+    case 'failed': return 'failed';
+    case 'stopped':
+    case 'killed': return 'stopped';
+    case 'paused':
+    case 'pending': return 'waiting';
+    default: return 'running';
+  }
+}
+
+export class RuntimeActivityAdapter {
+  private readonly activities = new Map<string, ChildActivity>();
+  private backgroundTaskIds = new Set<string>();
+  private piPendingError: string | undefined;
+
+  constructor(
+    private readonly runtime: AssistantRuntime,
+    private readonly sessionId: string,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  adapt(rawEvent: unknown): ChildActivity[] {
+    const event = asRecord(rawEvent);
+    if (!event) return [];
+    if (this.runtime === 'claude_code') return this.adaptClaude(event);
+    if (this.runtime === 'codex') return this.adaptCodex(event);
+    return this.adaptPi(event);
+  }
+
+  stopRunning(status: Extract<ChildActivityStatus, 'failed' | 'stopped'>): ChildActivity[] {
+    const now = this.now();
+    const updates: ChildActivity[] = [];
+    for (const activity of this.activities.values()) {
+      if (activity.status !== 'running' && activity.status !== 'waiting') continue;
+      updates.push(this.upsert({ ...activity, status, updatedAt: now }));
+    }
+    return updates;
+  }
+
+  private upsert(activity: ChildActivity): ChildActivity {
+    this.activities.set(activity.id, activity);
+    return activity;
+  }
+
+  private adaptClaude(event: Record<string, unknown>): ChildActivity[] {
+    if (event.type !== 'system') return [];
+    const subtype = asString(event.subtype);
+    const now = this.now();
+
+    if (subtype === 'background_tasks_changed') {
+      const nextIds = new Set<string>();
+      const updates: ChildActivity[] = [];
+      const tasks = Array.isArray(event.tasks) ? event.tasks : [];
+      for (const candidate of tasks) {
+        const task = asRecord(candidate);
+        const id = asString(task?.task_id);
+        if (!id) continue;
+        nextIds.add(id);
+        const previous = this.activities.get(id);
+        updates.push(this.upsert({
+          id,
+          ...(previous?.parentId ? { parentId: previous.parentId } : {}),
+          runtime: 'claude_code',
+          kind: 'background',
+          title: asString(task?.description) || previous?.title || 'Claude background task',
+          status: 'running',
+          ...(previous?.summary ? { summary: previous.summary } : {}),
+          startedAt: previous?.startedAt ?? now,
+          updatedAt: now,
+        }));
+      }
+      this.backgroundTaskIds = nextIds;
+      return updates;
+    }
+
+    if (subtype !== 'task_started' && subtype !== 'task_progress' && subtype !== 'task_notification' && subtype !== 'task_updated') {
+      return [];
+    }
+    const id = asString(event.task_id);
+    if (!id) return [];
+    const previous = this.activities.get(id);
+    const patch = asRecord(event.patch);
+    const rawStatus = subtype === 'task_notification'
+      ? event.status
+      : subtype === 'task_updated'
+        ? patch?.status
+        : 'running';
+    const parentId = asString(event.tool_use_id) || previous?.parentId;
+    const description = asString(event.description ?? patch?.description);
+    const taskType = asString(event.task_type);
+    const subagentType = asString(event.subagent_type);
+    const summary = asString(event.summary ?? patch?.error) || previous?.summary;
+    const normalizedTaskType = taskType.replace(/[_-]/g, '').toLowerCase();
+    const previousChildKind = previous?.kind === 'subagent'
+      || previous?.kind === 'background'
+      || previous?.kind === 'workflow'
+      ? previous.kind
+      : undefined;
+    const background = this.backgroundTaskIds.has(id) || previousChildKind === 'background';
+    const subagent = Boolean(subagentType)
+      || normalizedTaskType === 'agent'
+      || normalizedTaskType === 'subagent'
+      || normalizedTaskType === 'remoteagent'
+      || previousChildKind === 'subagent';
+    const workflow = taskType === 'local_workflow' || previousChildKind === 'workflow';
+    // Ordinary foreground tools can also emit task lifecycle edges. They stay
+    // in ToolActionGroup and retain the configured wall-clock timeout.
+    if (!background && !subagent && !workflow) return [];
+    const kind = background ? 'background' : subagent ? 'subagent' : 'workflow';
+    return [this.upsert({
+      id,
+      ...(parentId ? { parentId } : {}),
+      runtime: 'claude_code',
+      kind,
+      title: description || previous?.title || subagentType || 'Claude task',
+      status: normalizeClaudeStatus(rawStatus),
+      ...(summary ? { summary } : {}),
+      startedAt: previous?.startedAt ?? now,
+      updatedAt: now,
+    })];
+  }
+
+  private adaptCodex(event: Record<string, unknown>): ChildActivity[] {
+    const now = this.now();
+    const activityId = getCodexChildActivityId(event as { type: string; [key: string]: unknown });
+    const previous = activityId ? this.activities.get(activityId) : undefined;
+    const activity = mapCodexChildActivityEvent(event as { type: string; [key: string]: unknown }, previous, now);
+    const updates = activity ? [this.upsert(activity)] : [];
+    for (const agentActivity of mapCodexAgentStateActivities(
+      event as { type: string; [key: string]: unknown },
+      (id) => this.activities.get(id),
+      now,
+    )) {
+      updates.push(this.upsert(agentActivity));
+    }
+    return updates;
+  }
+
+  private adaptPi(event: Record<string, unknown>): ChildActivity[] {
+    const type = asString(event.type);
+    if (type === 'message_end') {
+      const message = asRecord(event.message);
+      if (message?.role === 'assistant') {
+        this.piPendingError = message.stopReason === 'error'
+          ? asString(message.errorMessage) || 'Pi model request failed'
+          : undefined;
+      }
+      return [];
+    }
+    const supported = new Set([
+      'agent_start',
+      'agent_end',
+      'agent_settled',
+      'auto_retry_start',
+      'auto_retry_end',
+      'compaction_start',
+      'compaction_end',
+    ]);
+    if (!supported.has(type)) return [];
+    const id = `${this.sessionId}:pi-agent`;
+    const previous = this.activities.get(id);
+    const now = this.now();
+    let status: ChildActivityStatus = previous?.status ?? 'running';
+    let summary = previous?.summary;
+    if (type === 'agent_start') {
+      status = 'running';
+      summary = undefined;
+    } else if (type === 'agent_end') {
+      status = event.willRetry === true ? 'waiting' : 'running';
+      summary = event.willRetry === true ? 'Waiting to retry' : 'Agent pass finished';
+    } else if (type === 'agent_settled') {
+      status = this.piPendingError ? 'failed' : 'completed';
+      summary = this.piPendingError || 'Agent settled';
+    } else if (type === 'auto_retry_start') {
+      status = 'waiting';
+      const attempt = typeof event.attempt === 'number' ? event.attempt : undefined;
+      summary = attempt ? `Retrying (attempt ${attempt})` : 'Retrying';
+    } else if (type === 'compaction_start') {
+      status = 'waiting';
+      summary = 'Compacting context';
+    } else if (type === 'compaction_end') {
+      status = 'running';
+      summary = event.aborted === true || event.errorMessage ? 'Context compaction failed' : 'Context compacted';
+    } else if (type === 'auto_retry_end') {
+      if (event.success === false) {
+        this.piPendingError = asString(event.finalError) || this.piPendingError || 'Pi retry failed';
+        status = 'waiting';
+        summary = this.piPendingError;
+      } else {
+        this.piPendingError = undefined;
+        status = 'running';
+        summary = 'Retry finished';
+      }
+    }
+    return [this.upsert({
+      id,
+      runtime: 'pi',
+      kind: 'agent',
+      title: 'Pi agent',
+      status,
+      ...(summary ? { summary } : {}),
+      startedAt: previous?.startedAt ?? now,
+      updatedAt: now,
+    })];
   }
 }
 
@@ -258,6 +528,22 @@ export class SDKAdapter {
           elapsedSeconds: Math.round(payload?.elapsed_seconds || 0),
         };
       }
+
+      case 'activity.updated': {
+        const activity = parseChildActivity(event.data);
+        if (!activity) return null;
+        return {
+          type: 'activity.updated',
+          metadata,
+          activity,
+        };
+      }
+
+      case 'runtime.heartbeat':
+        return {
+          type: 'runtime.heartbeat',
+          metadata,
+        };
 
       default:
         return null;

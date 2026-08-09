@@ -7,6 +7,7 @@ import { getUploadedFilePaths, buildPromptWithHistory, formatSSE } from '@/lib/c
 import { isDangerouslySkipPermissionsEnabled } from '@/lib/assistant-permissions';
 import { getSetting } from '@/lib/db-session';
 import { getShellEnvironment } from '@/lib/environment';
+import { RuntimeActivityAdapter } from '@/lib/agent-runtime/sdk-adapter';
 import { splitPiModelSelection } from '@/lib/pi-model-selection';
 import { findPiBinary, getExpandedPath } from '@/lib/platform';
 import {
@@ -353,6 +354,8 @@ export function streamPi(options: PiStreamOptions): ReadableStream<string> {
         let stderrBuffer = '';
         let promptAccepted = false;
         let settled = false;
+        let pendingAssistantError: string | null = null;
+        const activityAdapter = new RuntimeActivityAdapter('pi', options.sessionId);
 
         const history = resumeSessionId
           ? undefined
@@ -367,6 +370,9 @@ export function streamPi(options: PiStreamOptions): ReadableStream<string> {
         });
 
         const handleRecord = (record: PiRpcRecord) => {
+          for (const activity of activityAdapter.adapt(record)) {
+            emit({ type: 'activity.updated', data: JSON.stringify(activity) });
+          }
           const type = typeof record.type === 'string' ? record.type : '';
           if (type === 'response') {
             const id = typeof record.id === 'string' ? record.id : '';
@@ -424,10 +430,11 @@ export function streamPi(options: PiStreamOptions): ReadableStream<string> {
                 lastTurnUsage: toTokenUsage(usage),
               });
               if (messageRecord.stopReason === 'error') {
-                const errorText = typeof messageRecord.errorMessage === 'string' && messageRecord.errorMessage.trim()
+                pendingAssistantError = typeof messageRecord.errorMessage === 'string' && messageRecord.errorMessage.trim()
                   ? messageRecord.errorMessage
                   : extractTextContent(messageRecord.content) || 'Pi model request failed';
-                finish(errorText);
+              } else {
+                pendingAssistantError = null;
               }
             }
             return;
@@ -481,13 +488,21 @@ export function streamPi(options: PiStreamOptions): ReadableStream<string> {
             emit({ type: 'status', data: `Pi is retrying (attempt ${asFiniteNumber(record.attempt)})...` });
             return;
           }
+          if (type === 'auto_retry_end') {
+            if (record.success === false && typeof record.finalError === 'string' && record.finalError.trim()) {
+              pendingAssistantError = record.finalError;
+            } else if (record.success === true) {
+              pendingAssistantError = null;
+            }
+            return;
+          }
           if (type === 'extension_error') {
             emit({ type: 'status', data: `Pi extension warning: ${String(record.error || 'unknown error')}` });
             return;
           }
           if (type === 'agent_settled') {
             settled = true;
-            finish();
+            finish(pendingAssistantError || undefined);
           }
         };
 

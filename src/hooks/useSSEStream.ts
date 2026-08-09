@@ -5,6 +5,7 @@ import { sdkAdapter } from '@/lib/agent-runtime/sdk-adapter';
 import { getChatRolloutMode } from '@/lib/chat-rollout';
 import type {
   AssistantPersistedEventData,
+  ChildActivity,
   PermissionRequestEvent,
   SSEEvent,
   TokenUsage,
@@ -38,6 +39,8 @@ export interface SSECallbacks {
   onTaskUpdate: (sessionId: string) => void;
   onUserPersisted: (data: UserPersistedEventData) => void;
   onAssistantPersisted: (data: AssistantPersistedEventData) => void;
+  onActivity?: (activity: ChildActivity) => void;
+  onHeartbeat?: () => void;
   onError: (accumulated: string, detail?: string) => void;
 }
 
@@ -199,6 +202,16 @@ function dispatchAgentEvent(
         message_id: event.messageId,
         created_at: event.createdAt,
       });
+      return accumulators;
+    }
+
+    case 'activity.updated': {
+      callbacks.onActivity?.(event.activity);
+      return accumulators;
+    }
+
+    case 'runtime.heartbeat': {
+      callbacks.onHeartbeat?.();
       return accumulators;
     }
 
@@ -469,6 +482,8 @@ export function useSSEStream() {
         onTaskUpdate: (s) => callbacksRef.current?.onTaskUpdate(s),
         onUserPersisted: (d) => callbacksRef.current?.onUserPersisted(d),
         onAssistantPersisted: (d) => callbacksRef.current?.onAssistantPersisted(d),
+        onActivity: (a) => callbacksRef.current?.onActivity?.(a),
+        onHeartbeat: () => callbacksRef.current?.onHeartbeat?.(),
         onError: (a, d) => callbacksRef.current?.onError(a, d),
       };
 

@@ -7,6 +7,7 @@ import type {
   Message,
   PermissionRequestEvent,
   StreamingMessageBlock,
+  ChildActivity,
   ToolResultInfo,
   ToolUseInfo,
 } from '@/types';
@@ -256,6 +257,7 @@ interface MessageListProps {
   onPermissionResponse?: (decision: 'allow' | 'allow_session' | 'deny', updatedInput?: Record<string, unknown>) => void;
   permissionResolved?: 'allow' | 'deny' | null;
   onForceStop?: () => void;
+  childActivities?: ChildActivity[];
   hasMore?: boolean;
   loadingMore?: boolean;
   onLoadMore?: () => void;
@@ -288,6 +290,7 @@ export function MessageList({
   onPermissionResponse,
   permissionResolved,
   onForceStop,
+  childActivities = [],
   hasMore,
   loadingMore,
   onLoadMore,
@@ -342,12 +345,12 @@ export function MessageList({
     prevMessageCountRef.current = messages.length;
   }, [messages]);
 
-  if (messages.length === 0 && !isStreaming) {
+  if (messages.length === 0 && !isStreaming && childActivities.length === 0) {
     return <div className="flex-1" />;
   }
 
   const hasActiveStreamingInMap = Boolean(
-    isStreaming
+    (isStreaming || childActivities.length > 0)
     && activeStreamingClientMessageId
     && messages.some((m) => m.role === 'assistant' && m.client_message_id === activeStreamingClientMessageId),
   );
@@ -376,7 +379,7 @@ export function MessageList({
             ? activeMatchOccurrenceIndex
             : null;
           const isActiveStreamingAssistant = Boolean(
-            isStreaming
+            (isStreaming || childActivities.length > 0)
             && activeStreamingClientMessageId
             && message.role === 'assistant'
             && message.client_message_id === activeStreamingClientMessageId
@@ -405,6 +408,7 @@ export function MessageList({
                     onPermissionResponse,
                     permissionResolved,
                     onForceStop,
+                    childActivities,
                   } : undefined}
                 />
               </div>
@@ -434,6 +438,7 @@ export function MessageList({
               onPermissionResponse={onPermissionResponse}
               permissionResolved={permissionResolved}
               onForceStop={onForceStop}
+              childActivities={childActivities}
             />
           </div>
         )}

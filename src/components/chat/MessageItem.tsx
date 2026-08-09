@@ -324,6 +324,7 @@ interface MessageItemStreamingState {
   onPermissionResponse?: (decision: 'allow' | 'allow_session' | 'deny', updatedInput?: Record<string, unknown>) => void;
   permissionResolved?: 'allow' | 'deny' | null;
   onForceStop?: () => void;
+  childActivities?: import('@/types').ChildActivity[];
 }
 
 const CHAT_SEARCH_MARK_SELECTOR = 'mark[data-chat-search-highlight="true"]';
@@ -865,6 +866,7 @@ export const MessageItem = memo(function MessageItem({
             onPermissionResponse={streamingState.onPermissionResponse}
             permissionResolved={streamingState.permissionResolved}
             onForceStop={streamingState.onForceStop}
+            childActivities={streamingState.childActivities}
           />
         )}
 

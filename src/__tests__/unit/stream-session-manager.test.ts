@@ -117,7 +117,7 @@ describe('stream-session-manager terminal snapshots', () => {
     } = await importFreshStreamSessionManager();
 
     const encoder = new TextEncoder();
-    let stopCalled = false;
+    let stopCallCount = 0;
 
     // Stream that sends one chunk then waits — abort signal will close it
     global.fetch = async (url: string | URL | Request, init?: RequestInit) => {
@@ -127,7 +127,7 @@ describe('stream-session-manager terminal snapshots', () => {
           ? url.toString()
           : url.url;
       if (requestUrl === '/api/chat/stop') {
-        stopCalled = true;
+        stopCallCount += 1;
         return new Response(JSON.stringify({ stopped: true }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -186,6 +186,7 @@ describe('stream-session-manager terminal snapshots', () => {
 
     await activePromise;
     stopStream(sessionId);
+    stopStream(sessionId);
 
     const snapshot = await stoppedPromise;
     assert.ok(snapshot);
@@ -195,7 +196,7 @@ describe('stream-session-manager terminal snapshots', () => {
     assert.ok(snapshot.streamingContent.includes('*(generation stopped)*'));
     assert.ok(snapshot.streamingBlocks.length > 0);
     assert.ok(buildSnapshotAssistantContent(snapshot).includes('partial content'));
-    assert.equal(stopCalled, true);
+    assert.equal(stopCallCount, 1);
 
     await settleStreamAndClear(sessionId, clearSnapshot);
   });
@@ -335,6 +336,113 @@ describe('stream-session-manager terminal snapshots', () => {
     assert.equal(snapshot.phase, 'error');
     assert.equal(snapshot.error, 'Stream idle timeout (330s)');
     assert.match(snapshot.streamingContent, /idle timeout/i);
+
+    await settleStreamAndClear(sessionId, clearSnapshot);
+  });
+
+  it('keeps a long silent child activity alive from activity and heartbeat events, then stops once on a real idle gap', async () => {
+    const {
+      startStream,
+      subscribe,
+      clearSnapshot,
+    } = await importFreshStreamSessionManager();
+
+    const encoder = new TextEncoder();
+    let fakeNow = 2_000_000;
+    let idleTimerCallback: (() => void) | null = null;
+    let responseController: ReadableStreamDefaultController<Uint8Array> | null = null;
+    let stopCallCount = 0;
+
+    Date.now = () => fakeNow;
+    global.setInterval = (((handler: TimerHandler) => {
+      idleTimerCallback = () => {
+        if (typeof handler === 'function') handler();
+      };
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as unknown) as typeof global.setInterval;
+    global.clearInterval = (() => undefined) as typeof global.clearInterval;
+
+    global.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+      if (requestUrl === '/api/chat/stop') {
+        stopCallCount += 1;
+        return new Response(JSON.stringify({ stopped: true }), { status: 200 });
+      }
+
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          responseController = controller;
+          init?.signal?.addEventListener('abort', () => {
+            try { controller.error(new DOMException('Aborted', 'AbortError')); } catch { /* terminal */ }
+          }, { once: true });
+        },
+      });
+      return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+    };
+
+    const sessionId = `activity-heartbeat-${Date.now()}`;
+    const activitySeen = new Promise<void>((resolve) => {
+      const unsubscribe = subscribe(sessionId, (event: StreamEvent) => {
+        if (event.snapshot.childActivities.some((activity) => activity.id === 'child-1')) {
+          unsubscribe();
+          resolve();
+        }
+      });
+    });
+    const completed = new Promise<Awaited<ReturnType<typeof import('../../lib/stream-session-manager').getSnapshot>>>((resolve) => {
+      const unsubscribe = subscribe(sessionId, (event: StreamEvent) => {
+        if (event.type === 'completed') {
+          unsubscribe();
+          resolve(event.snapshot);
+        }
+      });
+    });
+
+    startStream({
+      sessionId,
+      clientMessageId: 'msg-activity-1',
+      content: 'run child',
+      mode: 'code',
+      model: 'test-model',
+      providerId: '',
+      assistantRuntime: 'claude_code',
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (!responseController || !idleTimerCallback) throw new Error('stream timers were not registered');
+    const activeResponseController = responseController as unknown as ReadableStreamDefaultController<Uint8Array>;
+    const triggerIdleTimer = idleTimerCallback as unknown as () => void;
+    fakeNow += 320_000;
+    activeResponseController.enqueue(encoder.encode(`data: ${JSON.stringify({
+      type: 'activity.updated',
+      data: JSON.stringify({
+        id: 'child-1',
+        runtime: 'claude_code',
+        kind: 'subagent',
+        title: 'Long review',
+        status: 'running',
+        startedAt: fakeNow - 320_000,
+        updatedAt: fakeNow,
+      }),
+    })}\n\n`));
+    await activitySeen;
+
+    fakeNow += 320_000;
+    activeResponseController.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'runtime.heartbeat', data: '' })}\n\n`));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    triggerIdleTimer();
+    assert.equal(stopCallCount, 0);
+
+    fakeNow += 331_000;
+    triggerIdleTimer();
+    const snapshot = await completed;
+    assert.ok(snapshot);
+    assert.equal(snapshot.phase, 'error');
+    assert.equal(stopCallCount, 1);
 
     await settleStreamAndClear(sessionId, clearSnapshot);
   });
@@ -592,7 +700,7 @@ describe('stream-session-manager terminal snapshots', () => {
     await settleStreamAndClear(sessionId, clearSnapshot);
   });
 
-  it('tool-timeout auto-retry starts a fresh client message id', async () => {
+  it('tool timeout stops the turn without automatically sending another prompt', async () => {
     const {
       startStream,
       subscribe,
@@ -643,9 +751,7 @@ describe('stream-session-manager terminal snapshots', () => {
     await completedPromise;
     await new Promise((resolve) => setTimeout(resolve, 700));
 
-    assert.equal(retries.length, 1);
-    assert.match(retries[0]?.content || '', /tool "Read" timed out/i);
-    assert.equal(retries[0]?.clientMessageId, undefined);
+    assert.equal(retries.length, 0);
 
     await settleStreamAndClear(sessionId, clearSnapshot);
   });

@@ -1,4 +1,4 @@
-import type { PermissionRequestEvent, TokenUsage } from '@/types';
+import type { ChildActivity, PermissionRequestEvent, TokenUsage } from '@/types';
 
 export type AgentEventSource = 'sdk' | 'bridge' | 'ui';
 
@@ -62,6 +62,12 @@ export interface ToolTimeoutEvent extends BaseAgentEvent<'tool.timeout'> {
   elapsedSeconds: number;
 }
 
+export interface ActivityUpdatedEvent extends BaseAgentEvent<'activity.updated'> {
+  activity: ChildActivity;
+}
+
+export type RuntimeHeartbeatEvent = BaseAgentEvent<'runtime.heartbeat'>;
+
 export interface PermissionRequiredEvent extends BaseAgentEvent<'permission.required'> {
   request: PermissionRequestEvent;
 }
@@ -123,6 +129,8 @@ export type AgentEvent =
   | ToolOutputEvent
   | ToolProgressEvent
   | ToolTimeoutEvent
+  | ActivityUpdatedEvent
+  | RuntimeHeartbeatEvent
   | PermissionRequiredEvent
   | PermissionResolvedEvent
   | ModeChangedEvent

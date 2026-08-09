@@ -517,6 +517,8 @@ export type SSEEventType =
   | 'task_update'        // SDK TodoWrite task sync
   | 'user_persisted'     // user message persisted to DB
   | 'persisted'          // assistant message persisted to DB
+  | 'activity.updated'   // complete ChildActivity upsert payload
+  | 'runtime.heartbeat'  // liveness only; never persisted or rendered
   | 'done';              // stream complete
 
 export interface SSEEvent {
@@ -832,6 +834,20 @@ export type StreamingMessageBlock =
 
 export type StreamPhase = 'active' | 'completed' | 'error' | 'stopped';
 
+export type ChildActivityStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'stopped';
+
+export interface ChildActivity {
+  id: string;
+  parentId?: string;
+  runtime: AssistantRuntime;
+  kind: string;
+  title: string;
+  status: ChildActivityStatus;
+  summary?: string;
+  startedAt: number;
+  updatedAt: number;
+}
+
 export interface SessionStreamSnapshot {
   sessionId: string;
   clientMessageId: string | null;
@@ -842,6 +858,7 @@ export interface SessionStreamSnapshot {
   toolResults: ToolResultInfo[];
   streamingBlocks: StreamingMessageBlock[];
   streamingToolOutput: string;
+  childActivities: ChildActivity[];
   statusText: string | undefined;
   pendingPermission: PermissionRequestEvent | null;
   permissionResolved: 'allow' | 'deny' | null;

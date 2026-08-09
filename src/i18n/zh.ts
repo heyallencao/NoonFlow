@@ -867,6 +867,14 @@ const zh: Record<TranslationKey, string> = {
   'tool.success': '成功',
   'tool.error': '错误',
 
+  // ── 子活动 ──────────────────────────────────────────────────
+  'activity.title': '活动',
+  'activity.status.running': '运行中',
+  'activity.status.waiting': '等待中',
+  'activity.status.completed': '已完成',
+  'activity.status.failed': '失败',
+  'activity.status.stopped': '已停止',
+
   // ── Common ──────────────────────────────────────────────────
   'common.cancel': '取消',
   'common.refresh': '刷新',

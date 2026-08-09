@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { appendPersistedAckEvent, wrapStreamWithSSEEvents } from '../../lib/chat/persisted-sse';
+import { appendPersistedAckEvent, wrapStreamWithHeartbeat, wrapStreamWithSSEEvents } from '../../lib/chat/persisted-sse';
 
 function createStream(chunks: string[]): ReadableStream<string> {
   return new ReadableStream<string>({
@@ -30,6 +30,82 @@ async function readStream(stream: ReadableStream<string>): Promise<string> {
 }
 
 describe('chat persisted SSE helper', () => {
+  it('emits heartbeat while the source is silent and stops immediately on abort', async () => {
+    const originalSetInterval = global.setInterval;
+    const originalClearInterval = global.clearInterval;
+    let tick: (() => void) | null = null;
+    let cancelled = 0;
+    const abortController = new AbortController();
+    global.setInterval = (((handler: TimerHandler) => {
+      tick = () => typeof handler === 'function' && handler();
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as unknown) as typeof global.setInterval;
+    global.clearInterval = (() => undefined) as typeof global.clearInterval;
+
+    try {
+      const source = new ReadableStream<string>({
+        cancel() {
+          cancelled += 1;
+        },
+      });
+      const reader = wrapStreamWithHeartbeat(source, {
+        intervalMs: 10,
+        signal: abortController.signal,
+      }).getReader();
+
+      if (!tick) throw new Error('heartbeat timer was not registered');
+      const triggerHeartbeat = tick as unknown as () => void;
+      triggerHeartbeat();
+      const first = await reader.read();
+      assert.equal(first.done, false);
+      assert.match(first.value ?? '', /"type":"runtime\.heartbeat"/);
+
+      abortController.abort();
+      const done = await reader.read();
+      assert.equal(done.done, true);
+      assert.equal(cancelled, 1);
+    } finally {
+      global.setInterval = originalSetInterval;
+      global.clearInterval = originalClearInterval;
+    }
+  });
+
+  it('stops heartbeat scheduling immediately on runtime error and source completion', async () => {
+    const originalSetInterval = global.setInterval;
+    const originalClearInterval = global.clearInterval;
+    let cleared = 0;
+    global.setInterval = ((() => 2 as unknown as ReturnType<typeof setInterval>) as unknown) as typeof global.setInterval;
+    global.clearInterval = (() => { cleared += 1; }) as typeof global.clearInterval;
+
+    try {
+      let errorSourceCancelled = 0;
+      const abortController = new AbortController();
+      const errorSource = new ReadableStream<string>({
+        start(controller) {
+          controller.enqueue(`data: ${JSON.stringify({ type: 'error', data: 'runtime failed' })}\n\n`);
+        },
+        cancel() {
+          errorSourceCancelled += 1;
+        },
+      });
+      const errorReader = wrapStreamWithHeartbeat(errorSource, {
+        intervalMs: 10,
+        signal: abortController.signal,
+      }).getReader();
+      const errorEvent = await errorReader.read();
+      assert.match(errorEvent.value ?? '', /"type":"error"/);
+      assert.equal(cleared, 1);
+      abortController.abort();
+      assert.equal((await errorReader.read()).done, true);
+      assert.equal(errorSourceCancelled, 1);
+
+      await readStream(wrapStreamWithHeartbeat(createStream([]), { intervalMs: 10 }));
+      assert.equal(cleared, 2);
+    } finally {
+      global.setInterval = originalSetInterval;
+      global.clearInterval = originalClearInterval;
+    }
+  });
   it('prepends lifecycle events before the source stream and appends terminal events after it', async () => {
     const output = await readStream(wrapStreamWithSSEEvents(
       createStream([
