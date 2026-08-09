@@ -20,6 +20,7 @@ NoonFlow 是一个原生 macOS 桌面界面，用来在项目工作区中使用 
 
 - **Claude Code、Codex 与 Pi** — 在同一个工作区中选择三种本地编码运行时
 - **工作区优先** — 只展示你在 NoonFlow 中主动打开过的项目，并回到项目最近的原生会话
+- **Git Worktree** — 创建 NoonFlow 管理的 worktree、打开已有外部 worktree，并让每个运行时会话在所选检出目录中隔离执行
 - **原生会话延续** — 直接读取和恢复 Claude Code、Codex、Pi 会话，不导入、不复制到 NoonFlow 自己的对话数据库
 - **记忆浏览** — 分页查看 NoonFlow 已打开工作区所关联的原生会话历史
 - **终端与文件** — 在应用内浏览项目、编辑文件并使用集成终端
@@ -28,7 +29,7 @@ NoonFlow 是一个原生 macOS 桌面界面，用来在项目工作区中使用 
 
 ## 当前边界
 
-这个版本删除了 Monitor/分析页面、Git 仪表盘与 worktree 管理、bot 集成以及 bridge 子系统。NoonFlow 不再持久化自己的聊天副本；Claude Code、Codex 和 Pi 是各自会话的唯一事实来源。NoonFlow 只保留应用偏好，例如你主动打开过的工作区。
+精简后的产品不再包含 Monitor/分析页面、宽泛的 Git 仪表盘、bot 集成和 bridge 子系统，但保留面向隔离编码会话的轻量 Git worktree 流程，不恢复仓库分析能力。NoonFlow 不持久化自己的聊天副本；Claude Code、Codex 和 Pi 仍是各自会话的唯一事实来源，NoonFlow 只保留应用偏好，例如你主动打开过的工作区。
 
 ## 技术栈
 

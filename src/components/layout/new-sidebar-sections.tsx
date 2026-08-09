@@ -2,10 +2,13 @@ import { useSyncExternalStore, type CSSProperties, type MouseEvent as ReactMouse
 import Link from 'next/link';
 import { HugeiconsIcon, type IconSvgElement } from '@hugeicons/react';
 import {
+  ArrowDown01Icon,
   ArrowLeft01Icon,
   ArrowRight01Icon,
   Cancel01Icon,
   Folder01Icon,
+  GitBranchIcon,
+  Loading03Icon,
   PlusSignIcon,
   Settings02Icon,
   Sun01Icon,
@@ -13,7 +16,9 @@ import {
 } from '@hugeicons/core-free-icons';
 import { useTheme } from 'next-themes';
 import type { TranslationKey } from '@/i18n';
+import { WorktreeItem } from '@/components/worktree/WorktreeItem';
 import { cn } from '@/lib/utils';
+import type { Worktree } from '@/types';
 
 const DEFAULT_THEME_TOGGLE_ICON = Moon01Icon;
 
@@ -195,24 +200,44 @@ export function SidebarNavigation({
 interface WorkspaceSectionProps {
   collapsed: boolean;
   workspaceItems: WorkspaceItem[];
-  activeWorkspace: string;
+  activeProjectPath: string;
+  activeCheckoutPath: string;
   openingWorkspace: string | null;
   deletingWorkspacePath: string | null;
+  expandedWorkspaces: Set<string>;
+  worktreesByWorkspace: Record<string, Worktree[]>;
+  gitWorkspacePaths: Record<string, boolean | undefined>;
+  loadingWorktreePaths: Set<string>;
+  worktreeSessionCounts: Record<string, number>;
   onOpenFolderPicker: () => void;
   onOpenWorkspace: (path: string) => void;
+  onToggleWorkspaceExpand: (path: string) => void;
+  onSetWorktreeCreateTarget: (path: string) => void;
   onWorkspaceContextMenu: (e: ReactMouseEvent, workspace: WorkspaceItem) => void;
+  onWorktreeSelect: (workspacePath: string, worktree: Worktree) => void;
+  onWorktreeDelete: (worktree: Worktree) => void;
   t: TranslateFn;
 }
 
 export function WorkspaceSection({
   collapsed,
   workspaceItems,
-  activeWorkspace,
+  activeProjectPath,
+  activeCheckoutPath,
   openingWorkspace,
   deletingWorkspacePath,
+  expandedWorkspaces,
+  worktreesByWorkspace,
+  gitWorkspacePaths,
+  loadingWorktreePaths,
+  worktreeSessionCounts,
   onOpenFolderPicker,
   onOpenWorkspace,
+  onToggleWorkspaceExpand,
+  onSetWorktreeCreateTarget,
   onWorkspaceContextMenu,
+  onWorktreeSelect,
+  onWorktreeDelete,
   t,
 }: WorkspaceSectionProps) {
   return (
@@ -249,9 +274,18 @@ export function WorkspaceSection({
           )
         ) : (
           workspaceItems.map((workspace) => {
-            const isActive = workspace.path === activeWorkspace;
+            const isActiveProject = workspace.path === activeProjectPath;
+            const isLocalActive = workspace.path === activeCheckoutPath;
             const isOpening = openingWorkspace === workspace.path;
             const isDeleting = deletingWorkspacePath === workspace.path;
+            const isExpanded = expandedWorkspaces.has(workspace.path);
+            const isGitWorkspace = gitWorkspacePaths[workspace.path] === true;
+            const isLoadingWorktrees = loadingWorktreePaths.has(workspace.path);
+            const workspaceWorktrees = worktreesByWorkspace[workspace.path] || [];
+            const localWorktree = workspaceWorktrees.find((worktree) => worktree.is_default);
+            const additionalWorktrees = workspaceWorktrees.filter(
+              (worktree) => !worktree.is_default && !worktree.is_prunable,
+            );
             const handleWorkspacePrimaryClick = () => {
               if (isOpening || isDeleting) return;
               onOpenWorkspace(workspace.path);
@@ -263,7 +297,7 @@ export function WorkspaceSection({
                   className={cn(
                     'group relative flex w-full rounded-xl border text-left transition-all duration-200',
                     collapsed ? 'items-center justify-center px-1.5 py-2' : 'items-center gap-2 px-2.5 py-2',
-                    isActive
+                    isActiveProject
                       ? 'border-border-default/60 bg-gradient-to-br from-bg-hover to-bg-hover/60 text-sidebar-foreground shadow-sm'
                       : 'border-transparent bg-bg-tertiary/60 text-sidebar-foreground/85 hover:border-border-subtle/40 hover:bg-bg-hover/40 hover:shadow-sm',
                     (isOpening || isDeleting) && 'opacity-70'
@@ -276,10 +310,10 @@ export function WorkspaceSection({
                   onContextMenu={(e) => onWorkspaceContextMenu(e, workspace)}
                   role="group"
                   style={{
-                    transform: isActive ? 'scale(1.01)' : 'scale(1)',
+                    transform: isActiveProject ? 'scale(1.01)' : 'scale(1)',
                   }}
                 >
-                  {isActive && !collapsed && (
+                  {isActiveProject && !collapsed && (
                     <div className="absolute inset-0 rounded-xl bg-gradient-to-r from-sidebar-foreground/5 to-transparent opacity-50 pointer-events-none" />
                   )}
 
@@ -288,7 +322,7 @@ export function WorkspaceSection({
                     className={cn(
                       'flex shrink-0 items-center justify-center rounded-md transition-all duration-200 cursor-pointer',
                       'h-5 w-5',
-                      isActive
+                      isLocalActive
                         ? 'text-sidebar-foreground/90'
                         : 'text-sidebar-foreground/70 hover:text-sidebar-foreground/90'
                     )}
@@ -307,16 +341,94 @@ export function WorkspaceSection({
                     <>
                       <button
                         type="button"
-                        className="relative flex min-w-0 flex-1 items-center gap-1.5 text-left cursor-pointer"
+                        className="relative flex min-w-0 flex-1 flex-col text-left cursor-pointer"
                         onClick={handleWorkspacePrimaryClick}
+                        aria-label={workspace.name}
                       >
-                        <span className="truncate text-[12.5px] font-semibold leading-tight">
+                        <span className="w-full truncate text-[12.5px] font-semibold leading-tight">
                           {workspace.name}
                         </span>
+                        {localWorktree?.branch ? (
+                          <span className="mt-0.5 w-full truncate text-[9.5px] text-sidebar-foreground/45">
+                            {localWorktree.branch}
+                          </span>
+                        ) : null}
                       </button>
+
+                      {isGitWorkspace ? (
+                        <>
+                          <button
+                            type="button"
+                            className="relative inline-flex h-5 min-w-5 shrink-0 items-center justify-center gap-0.5 rounded-md px-1 text-sidebar-foreground/52 transition-colors hover:bg-bg-tertiary hover:text-sidebar-foreground"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onToggleWorkspaceExpand(workspace.path);
+                            }}
+                            aria-label={`${t('workspacePanel.worktrees')} · ${workspace.name}`}
+                            title={t('workspacePanel.worktrees')}
+                          >
+                            {isLoadingWorktrees ? (
+                              <HugeiconsIcon icon={Loading03Icon} className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <HugeiconsIcon icon={GitBranchIcon} className="h-3 w-3" />
+                            )}
+                            {additionalWorktrees.length > 0 ? (
+                              <span className="text-[9px] leading-none">{additionalWorktrees.length}</span>
+                            ) : null}
+                            <HugeiconsIcon
+                              icon={isExpanded ? ArrowDown01Icon : ArrowRight01Icon}
+                              className="h-2.5 w-2.5"
+                            />
+                          </button>
+                          <button
+                            type="button"
+                            className="relative inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/52 transition-colors hover:bg-bg-tertiary hover:text-sidebar-foreground"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onSetWorktreeCreateTarget(workspace.path);
+                            }}
+                            aria-label={`${t('workspacePanel.newWorktree')} · ${workspace.name}`}
+                            title={t('workspacePanel.newWorktree')}
+                            data-testid={`new-worktree-${workspace.name}`}
+                          >
+                            <HugeiconsIcon icon={PlusSignIcon} className="h-3 w-3" />
+                          </button>
+                        </>
+                      ) : null}
                     </>
                   )}
                 </div>
+
+                {!collapsed && isGitWorkspace && isExpanded ? (
+                  <div className="ml-4 space-y-1 border-l border-border-subtle/50 py-1 pl-2">
+                    {isLoadingWorktrees && additionalWorktrees.length === 0 ? (
+                      <div className="flex items-center gap-2 px-2 py-1.5 text-[10px] text-sidebar-foreground/50">
+                        <HugeiconsIcon icon={Loading03Icon} className="h-3 w-3 animate-spin" />
+                        {t('workspacePanel.loadingBranches')}
+                      </div>
+                    ) : null}
+                    {!isLoadingWorktrees && additionalWorktrees.length === 0 ? (
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[10.5px] text-sidebar-foreground/52 transition-colors hover:bg-bg-tertiary hover:text-sidebar-foreground"
+                        onClick={() => onSetWorktreeCreateTarget(workspace.path)}
+                      >
+                        <HugeiconsIcon icon={PlusSignIcon} className="h-3 w-3" />
+                        {t('workspacePanel.noAdditionalWorktrees')}
+                      </button>
+                    ) : null}
+                    {additionalWorktrees.map((worktree) => (
+                      <WorktreeItem
+                        key={worktree.id}
+                        worktree={worktree}
+                        isActive={worktree.worktree_path === activeCheckoutPath}
+                        sessionCount={worktreeSessionCounts[worktree.worktree_path] || 0}
+                        onSelect={(selected) => onWorktreeSelect(workspace.path, selected)}
+                        onDelete={selected => onWorktreeDelete(selected)}
+                      />
+                    ))}
+                  </div>
+                ) : null}
               </div>
             );
           })
@@ -330,7 +442,9 @@ interface WorkspaceContextMenuProps {
   contextMenuPosition: { x: number; y: number } | null;
   contextMenuWorkspace: WorkspaceItem | null;
   onOpenInFinder: (workspacePath: string) => void;
+  onCreateWorktree?: (workspacePath: string) => void;
   onCloseWorkspace: (workspace: WorkspaceItem) => void;
+  isGitWorkspace?: boolean;
   t: TranslateFn;
 }
 
@@ -338,7 +452,9 @@ export function WorkspaceContextMenu({
   contextMenuPosition,
   contextMenuWorkspace,
   onOpenInFinder,
+  onCreateWorktree,
   onCloseWorkspace,
+  isGitWorkspace = false,
   t,
 }: WorkspaceContextMenuProps) {
   if (!contextMenuPosition || !contextMenuWorkspace) {
@@ -363,6 +479,16 @@ export function WorkspaceContextMenu({
           <HugeiconsIcon icon={Folder01Icon} className="h-3.5 w-3.5 opacity-70" />
           <span>{t('workspacePanel.openInFinder')}</span>
         </button>
+        {isGitWorkspace && onCreateWorktree ? (
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-sidebar-foreground/85 transition-colors hover:bg-bg-hover"
+            onClick={() => onCreateWorktree(contextMenuWorkspace.path)}
+          >
+            <HugeiconsIcon icon={GitBranchIcon} className="h-3.5 w-3.5 opacity-70" />
+            <span>{t('workspacePanel.newWorktree')}</span>
+          </button>
+        ) : null}
         <div className="my-1 h-px bg-border-subtle/50" />
         <button
           type="button"

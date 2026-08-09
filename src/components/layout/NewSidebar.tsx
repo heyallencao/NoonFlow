@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
   DashboardSquare01Icon,
@@ -12,6 +12,8 @@ import {
 } from "@hugeicons/core-free-icons";
 
 import { FolderPicker } from "@/components/chat/FolderPicker";
+import { WorktreeCreateDialog } from "@/components/worktree/WorktreeCreateDialog";
+import { WorktreeDeleteDialog } from "@/components/worktree/WorktreeDeleteDialog";
 import { useNativeFolderPicker } from "@/hooks/useNativeFolderPicker";
 import { usePanel } from "@/hooks/usePanel";
 import { useTranslation } from "@/hooks/useTranslation";
@@ -21,7 +23,7 @@ import { fetchSessionsForOpenedWorkspaces, useSessionsQuery } from "@/lib/querie
 import { cn, parseDBDate } from "@/lib/utils";
 import { buildWorkspaceList, normalizeWorkspacePath } from "@/lib/workspace-utils";
 import { useWorkspaceStore } from "@/stores/workspace-store";
-import type { AssistantRuntime, ChatSession } from "@/types";
+import type { AssistantRuntime, ChatSession, Worktree, WorktreesResponse } from "@/types";
 import {
   SidebarHeader,
   SidebarNavigation,
@@ -65,8 +67,6 @@ export function NewSidebar({ isMobileOpen, onMobileClose }: NewSidebarProps) {
   const { hasNativeFolderDialog, openNativePicker } = useNativeFolderPicker();
   const storedWorkspaces = useWorkspaceStore((state) => state.workspacePaths);
   const hiddenWorkspaces = useWorkspaceStore((state) => state.hiddenWorkspaces);
-  const sessionsQuery = useSessionsQuery("all", storedWorkspaces);
-  const sessions = useMemo<ChatSession[]>(() => sessionsQuery.data?.sessions ?? [], [sessionsQuery.data?.sessions]);
   const hydrateWorkspaces = useWorkspaceStore((state) => state.hydrate);
   const rememberWorkspace = useWorkspaceStore((state) => state.rememberWorkspace);
   const removeWorkspace = useWorkspaceStore((state) => state.removeWorkspace);
@@ -76,11 +76,41 @@ export function NewSidebar({ isMobileOpen, onMobileClose }: NewSidebarProps) {
   const [openingWorkspace, setOpeningWorkspace] = useState<string | null>(null);
   const [contextMenuWorkspace, setContextMenuWorkspace] = useState<WorkspaceItem | null>(null);
   const [contextMenuPosition, setContextMenuPosition] = useState<{ x: number; y: number } | null>(null);
+  const [worktreesByWorkspace, setWorktreesByWorkspace] = useState<Record<string, Worktree[]>>({});
+  const [gitWorkspacePaths, setGitWorkspacePaths] = useState<Record<string, boolean | undefined>>({});
+  const [worktreeLimitsByWorkspace, setWorktreeLimitsByWorkspace] = useState<Record<string, number>>({});
+  const [loadingWorktreePaths, setLoadingWorktreePaths] = useState<Set<string>>(new Set());
+  const [expandedWorkspaces, setExpandedWorkspaces] = useState<Set<string>>(new Set());
+  const [worktreeCreateTarget, setWorktreeCreateTarget] = useState<string | null>(null);
+  const [deleteWorktreeTarget, setDeleteWorktreeTarget] = useState<Worktree | null>(null);
+  const initializedWorktreeExpansionRef = useRef(new Set<string>());
 
-  const activeWorkspace = useMemo(
+  const sessionWorkspacePaths = useMemo(() => {
+    const paths = [...storedWorkspaces];
+    for (const worktrees of Object.values(worktreesByWorkspace)) {
+      for (const worktree of worktrees) paths.push(worktree.worktree_path);
+    }
+    return Array.from(new Set(paths.map(normalizeWorkspacePath).filter(Boolean)));
+  }, [storedWorkspaces, worktreesByWorkspace]);
+  const sessionsQuery = useSessionsQuery("all", sessionWorkspacePaths);
+  const sessions = useMemo<ChatSession[]>(() => sessionsQuery.data?.sessions ?? [], [sessionsQuery.data?.sessions]);
+
+  const activeCheckoutPath = useMemo(
     () => normalizeWorkspacePath(workingDirectory || ""),
     [workingDirectory],
   );
+  const activeProjectPath = useMemo(() => {
+    for (const workspacePath of storedWorkspaces) {
+      const normalizedWorkspace = normalizeWorkspacePath(workspacePath);
+      if (normalizedWorkspace === activeCheckoutPath) return normalizedWorkspace;
+      if ((worktreesByWorkspace[normalizedWorkspace] || []).some(
+        (worktree) => normalizeWorkspacePath(worktree.worktree_path) === activeCheckoutPath,
+      )) {
+        return normalizedWorkspace;
+      }
+    }
+    return activeCheckoutPath;
+  }, [activeCheckoutPath, storedWorkspaces, worktreesByWorkspace]);
   const isActuallyCollapsed = collapsed && !isMobileOpen;
   const isSettingsRoute = pathname === "/settings" || pathname.startsWith("/settings/");
 
@@ -102,6 +132,51 @@ export function NewSidebar({ isMobileOpen, onMobileClose }: NewSidebarProps) {
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
   }, [contextMenuPosition]);
+
+  const refreshWorktrees = useCallback(async (workspacePath: string) => {
+    const normalized = normalizeWorkspacePath(workspacePath);
+    if (!normalized) return null;
+
+    setLoadingWorktreePaths((current) => new Set(current).add(normalized));
+    try {
+      const response = await fetch(`/api/worktrees?workspace=${encodeURIComponent(normalized)}`);
+      const payload = await response.json().catch(() => null) as (WorktreesResponse & { error?: string }) | null;
+      if (!response.ok || !payload) throw new Error(payload?.error || "Failed to load worktrees");
+
+      setGitWorkspacePaths((current) => ({ ...current, [normalized]: payload.is_git_repo }));
+      setWorktreeLimitsByWorkspace((current) => ({
+        ...current,
+        [normalized]: payload.max_managed_worktrees,
+      }));
+      setWorktreesByWorkspace((current) => ({
+        ...current,
+        [normalized]: payload.worktrees || [],
+      }));
+
+      if (!initializedWorktreeExpansionRef.current.has(normalized)) {
+        initializedWorktreeExpansionRef.current.add(normalized);
+        if ((payload.worktrees || []).some((worktree) => !worktree.is_default && !worktree.is_prunable)) {
+          setExpandedWorkspaces((current) => new Set(current).add(normalized));
+        }
+      }
+      return payload;
+    } catch {
+      setGitWorkspacePaths((current) => ({ ...current, [normalized]: false }));
+      return null;
+    } finally {
+      setLoadingWorktreePaths((current) => {
+        const next = new Set(current);
+        next.delete(normalized);
+        return next;
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    for (const workspacePath of storedWorkspaces) {
+      void refreshWorktrees(workspacePath);
+    }
+  }, [refreshWorktrees, storedWorkspaces]);
 
   const createSessionInWorkspace = useCallback(async (
     workspacePath: string,
@@ -127,53 +202,78 @@ export function NewSidebar({ isMobileOpen, onMobileClose }: NewSidebarProps) {
     router.push(`/chat/${sessionId}`);
   }, [router]);
 
-  const openWorkspace = useCallback(async (workspacePath: string) => {
-    const normalized = normalizeWorkspacePath(workspacePath);
-    if (!normalized) return;
+  const openCheckout = useCallback(async (workspacePath: string, checkoutPath: string) => {
+    const normalizedWorkspace = normalizeWorkspacePath(workspacePath);
+    const normalizedCheckout = normalizeWorkspacePath(checkoutPath);
+    if (!normalizedWorkspace || !normalizedCheckout) return;
 
-    setOpeningWorkspace(normalized);
-    rememberWorkspace(normalized);
-    setLastWorkspace(normalized);
-    setWorkingDirectory(normalized);
+    setOpeningWorkspace(normalizedCheckout);
+    rememberWorkspace(normalizedWorkspace);
+    setLastWorkspace(normalizedWorkspace);
 
     try {
-      const latestSessions = await fetchSessionsForOpenedWorkspaces("all", [normalized])
+      const latestSessions = await fetchSessionsForOpenedWorkspaces("all", [normalizedCheckout])
         .then((result) => result.sessions)
         .catch(() => sessions);
       const latestNativeSession = latestSessions
         .filter((session) => (
           session.session_type === "chat"
-          && normalizeWorkspacePath(session.working_directory || "") === normalized
+          && normalizeWorkspacePath(session.working_directory || "") === normalizedCheckout
         ))
         .sort((left, right) => parseDBDate(right.updated_at).getTime() - parseDBDate(left.updated_at).getTime())[0];
 
       if (latestNativeSession) {
         router.push(`/chat/${latestNativeSession.id}`);
       } else {
-        await createSessionInWorkspace(normalized);
+        await createSessionInWorkspace(normalizedCheckout);
       }
       onMobileClose?.();
     } finally {
       setOpeningWorkspace(null);
     }
-  }, [createSessionInWorkspace, onMobileClose, rememberWorkspace, router, sessions, setLastWorkspace, setWorkingDirectory]);
+  }, [createSessionInWorkspace, onMobileClose, rememberWorkspace, router, sessions, setLastWorkspace]);
+
+  const openWorkspace = useCallback(async (workspacePath: string) => {
+    await openCheckout(workspacePath, workspacePath);
+  }, [openCheckout]);
 
   const openFolderPicker = useCallback(async () => {
     if (hasNativeFolderDialog) {
       const selectedPath = await openNativePicker({
-        defaultPath: activeWorkspace || undefined,
+        defaultPath: activeProjectPath || undefined,
         title: t("folderPicker.title"),
       });
       if (selectedPath) await openWorkspace(selectedPath);
       return;
     }
     setFolderPickerOpen(true);
-  }, [activeWorkspace, hasNativeFolderDialog, openNativePicker, openWorkspace, t]);
+  }, [activeProjectPath, hasNativeFolderDialog, openNativePicker, openWorkspace, t]);
 
   const workspaceItems = useMemo<WorkspaceItem[]>(
     () => buildWorkspaceList({ workspaces: storedWorkspaces, hiddenWorkspaces, sessions }),
     [hiddenWorkspaces, sessions, storedWorkspaces],
   );
+
+  const worktreeSessionCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const session of sessions) {
+      const sessionPath = normalizeWorkspacePath(session.working_directory || "");
+      if (!sessionPath) continue;
+      counts[sessionPath] = (counts[sessionPath] || 0) + 1;
+    }
+    return counts;
+  }, [sessions]);
+
+  const toggleWorkspaceExpand = useCallback((workspacePath: string) => {
+    const normalized = normalizeWorkspacePath(workspacePath);
+    setExpandedWorkspaces((current) => {
+      const next = new Set(current);
+      if (next.has(normalized)) next.delete(normalized);
+      else next.add(normalized);
+      return next;
+    });
+    if (!expandedWorkspaces.has(normalized)) void refreshWorktrees(normalized);
+  }, [expandedWorkspaces, refreshWorktrees]);
 
   const handleWorkspaceContextMenu = useCallback((event: ReactMouseEvent, workspace: WorkspaceItem) => {
     event.preventDefault();
@@ -214,12 +314,24 @@ export function NewSidebar({ isMobileOpen, onMobileClose }: NewSidebarProps) {
             <WorkspaceSection
               collapsed={isActuallyCollapsed}
               workspaceItems={workspaceItems}
-              activeWorkspace={activeWorkspace}
+              activeProjectPath={activeProjectPath}
+              activeCheckoutPath={activeCheckoutPath}
               openingWorkspace={openingWorkspace}
               deletingWorkspacePath={null}
+              expandedWorkspaces={expandedWorkspaces}
+              worktreesByWorkspace={worktreesByWorkspace}
+              gitWorkspacePaths={gitWorkspacePaths}
+              loadingWorktreePaths={loadingWorktreePaths}
+              worktreeSessionCounts={worktreeSessionCounts}
               onOpenFolderPicker={() => void openFolderPicker()}
               onOpenWorkspace={(path) => void openWorkspace(path)}
+              onToggleWorkspaceExpand={toggleWorkspaceExpand}
+              onSetWorktreeCreateTarget={setWorktreeCreateTarget}
               onWorkspaceContextMenu={handleWorkspaceContextMenu}
+              onWorktreeSelect={(workspacePath, worktree) => {
+                void openCheckout(workspacePath, worktree.worktree_path);
+              }}
+              onWorktreeDelete={setDeleteWorktreeTarget}
               t={t}
             />
           </div>
@@ -229,7 +341,53 @@ export function NewSidebar({ isMobileOpen, onMobileClose }: NewSidebarProps) {
         open={folderPickerOpen}
         onOpenChange={setFolderPickerOpen}
         onSelect={(path) => void openWorkspace(path)}
-        initialPath={activeWorkspace || undefined}
+        initialPath={activeProjectPath || undefined}
+      />
+      {worktreeCreateTarget ? (
+        <WorktreeCreateDialog
+          open={Boolean(worktreeCreateTarget)}
+          onOpenChange={(open) => {
+            if (!open) setWorktreeCreateTarget(null);
+          }}
+          workspacePath={worktreeCreateTarget}
+          currentCount={(worktreesByWorkspace[worktreeCreateTarget] || []).filter(
+            (worktree) => worktree.is_managed && !worktree.is_default,
+          ).length}
+          maxCount={worktreeLimitsByWorkspace[worktreeCreateTarget] || 8}
+          onCreated={(worktree) => {
+            const projectPath = worktreeCreateTarget;
+            setWorktreesByWorkspace((current) => ({
+              ...current,
+              [projectPath]: [
+                ...(current[projectPath] || []).filter((entry) => entry.id !== worktree.id),
+                worktree,
+              ],
+            }));
+            setExpandedWorkspaces((current) => new Set(current).add(projectPath));
+            setWorktreeCreateTarget(null);
+            void refreshWorktrees(projectPath);
+            void openCheckout(projectPath, worktree.worktree_path);
+          }}
+        />
+      ) : null}
+      <WorktreeDeleteDialog
+        worktree={deleteWorktreeTarget}
+        onOpenChange={(open) => {
+          if (!open) setDeleteWorktreeTarget(null);
+        }}
+        onDeleted={(worktree) => {
+          setDeleteWorktreeTarget(null);
+          setWorktreesByWorkspace((current) => ({
+            ...current,
+            [worktree.workspace_path]: (current[worktree.workspace_path] || []).filter(
+              (entry) => entry.id !== worktree.id,
+            ),
+          }));
+          void refreshWorktrees(worktree.workspace_path);
+          if (normalizeWorkspacePath(activeCheckoutPath) === normalizeWorkspacePath(worktree.worktree_path)) {
+            void openCheckout(worktree.workspace_path, worktree.workspace_path);
+          }
+        }}
       />
       <WorkspaceContextMenu
         contextMenuPosition={contextMenuPosition}
@@ -239,9 +397,15 @@ export function NewSidebar({ isMobileOpen, onMobileClose }: NewSidebarProps) {
           setContextMenuPosition(null);
           setContextMenuWorkspace(null);
         }}
+        isGitWorkspace={contextMenuWorkspace ? gitWorkspacePaths[contextMenuWorkspace.path] === true : false}
+        onCreateWorktree={(workspacePath) => {
+          setWorktreeCreateTarget(workspacePath);
+          setContextMenuPosition(null);
+          setContextMenuWorkspace(null);
+        }}
         onCloseWorkspace={(workspace) => {
           removeWorkspace(workspace.path);
-          if (activeWorkspace === workspace.path) {
+          if (activeProjectPath === workspace.path) {
             setWorkingDirectory("");
             router.push("/dashboard");
           }

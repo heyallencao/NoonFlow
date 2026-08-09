@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Restored Git worktree discovery, managed creation, safe deletion, and workspace switching without restoring the removed Git analytics dashboard.
+- Worktree chats now launch Claude Code, Codex, or Pi with the selected checkout as their working directory.
+
 ## [0.6.0] - 2026-08-09
 
 NoonFlow 0.6.0 is the focused Claude Code and Codex desktop workspace release.

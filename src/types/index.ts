@@ -26,6 +26,26 @@ export interface ChatSession {
   assistant_runtime_version: string;
 }
 
+export interface Worktree {
+  id: string;
+  workspace_path: string;
+  worktree_path: string;
+  branch: string;
+  head: string;
+  name: string;
+  is_default: boolean;
+  is_prunable: boolean;
+  is_locked: boolean;
+  is_managed: boolean;
+}
+
+export interface WorktreeDeleteStatus {
+  checked: boolean;
+  has_changes: boolean;
+  dirty_files_count: number;
+  untracked_files_count: number;
+}
+
 export type AssistantRuntime = 'claude_code' | 'codex' | 'pi';
 
 export type SessionType = 'chat' | 'terminal';
@@ -260,6 +280,27 @@ export interface CreateSessionRequest {
   provider_id?: string;
   assistant_runtime?: AssistantRuntime;
   session_type?: 'chat' | 'terminal';
+}
+
+export interface CreateWorktreeRequest {
+  workspace_path: string;
+  branch: string;
+  base_branch?: string;
+}
+
+export interface DeleteWorktreeRequest {
+  workspace_path: string;
+  worktree_path: string;
+  confirm: boolean;
+  force_dirty?: boolean;
+  delete_branch?: boolean;
+}
+
+export interface WorktreesResponse {
+  worktrees: Worktree[];
+  is_git_repo: boolean;
+  workspace_path?: string;
+  max_managed_worktrees: number;
 }
 
 export interface SessionsQueryParams {

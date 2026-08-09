@@ -20,6 +20,7 @@ NoonFlow is a native macOS desktop interface for working with Claude Code, Codex
 
 - **Claude Code, Codex, and Pi** — choose any of the three local coding runtimes from one workspace
 - **Workspace-first chat** — open only the projects you choose and return to their latest native sessions
+- **Git worktrees** — create managed worktrees, open existing external worktrees, and keep each runtime session isolated in its selected checkout
 - **Native session continuity** — read and resume Claude Code, Codex, and Pi sessions without importing or duplicating their conversation history into a NoonFlow database
 - **Memory browser** — page through native session history for workspaces opened in NoonFlow
 - **Integrated terminal and files** — inspect a project, edit files, and use a built-in terminal without leaving the app
@@ -28,7 +29,7 @@ NoonFlow is a native macOS desktop interface for working with Claude Code, Codex
 
 ## Current scope
 
-This release removes the Monitor/analytics surfaces, Git dashboards and worktree management, bot integrations, and the bridge subsystem. NoonFlow no longer keeps its own persistent copy of chats. Claude Code, Codex, and Pi remain the source of truth for their sessions; NoonFlow persists only app preferences such as the workspaces you explicitly opened.
+The focused product excludes Monitor/analytics surfaces, broad Git dashboards, bot integrations, and the bridge subsystem. It retains a narrow Git worktree workflow for isolated coding sessions without restoring repository analytics. NoonFlow does not keep its own persistent copy of chats: Claude Code, Codex, and Pi remain the source of truth for their sessions, while NoonFlow persists only app preferences such as the workspaces you explicitly opened.
 
 ## Tech stack
 
