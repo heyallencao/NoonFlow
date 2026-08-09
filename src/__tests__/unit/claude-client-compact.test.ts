@@ -5,15 +5,21 @@ import os from 'node:os';
 import path from 'node:path';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'monolith-claude-compact-'));
+const claudeCliFixture = path.join(tmpDir, 'bin', 'claude');
 process.env.CLAUDE_GUI_DATA_DIR = tmpDir;
 fs.closeSync(fs.openSync(path.join(tmpDir, 'monolith.db'), 'w'));
+fs.mkdirSync(path.dirname(claudeCliFixture), { recursive: true });
+fs.writeFileSync(claudeCliFixture, '#!/bin/sh\nexit 0\n');
+fs.chmodSync(claudeCliFixture, 0o755);
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const db = require('../../lib/db') as typeof import('../../lib/db');
 const claudeClient = require('../../lib/claude-client') as typeof import('../../lib/claude-client');
+const claudeEnv = require('../../lib/claude-client/env') as typeof import('../../lib/claude-client/env');
 
 const { closeDb } = db;
 const { __setClaudeQueryForTests, streamClaude } = claudeClient;
+const { __setClaudePathResolverForTests } = claudeEnv;
 
 function parseSSEEvents(payload: string): Array<{ type: string; data: string }> {
   return payload
@@ -38,6 +44,7 @@ async function readStringStream(stream: ReadableStream<string>): Promise<string>
 
 afterEach(() => {
   __setClaudeQueryForTests(null);
+  __setClaudePathResolverForTests(null);
   closeDb();
 });
 
@@ -48,13 +55,18 @@ after(() => {
 describe('streamClaude official compact recovery', () => {
   it('runs official /compact and retries the original resumed turn after a context-limit resume failure', async () => {
     const calls: Array<{ prompt: string; resume?: string }> = [];
+    const executablePaths: string[] = [];
     const recoverySnapshots: Array<import('../../types').ContextBudgetRecoveryMetrics> = [];
     let resumedPromptAttempts = 0;
 
+    __setClaudePathResolverForTests(() => claudeCliFixture);
     __setClaudeQueryForTests((input) => {
       const promptValue = typeof input.prompt === 'string' ? input.prompt : '[non-string-prompt]';
       const resume = input.options?.resume;
       calls.push({ prompt: promptValue, resume });
+      if (input.options?.pathToClaudeCodeExecutable) {
+        executablePaths.push(input.options.pathToClaudeCodeExecutable);
+      }
 
       return (async function* () {
         if (resume === 'sdk-resume-1' && promptValue === 'Continue working') {
@@ -181,6 +193,10 @@ describe('streamClaude official compact recovery', () => {
       { prompt: '/compact', resume: 'sdk-resume-1' },
       { prompt: 'Continue working', resume: 'sdk-resume-1' },
     ]);
+    assert.equal(executablePaths.length, 3);
+    assert.equal(executablePaths.every((executablePath) => path.isAbsolute(executablePath)), true);
+    assert.equal(new Set(executablePaths).size, 1);
+    assert.equal(executablePaths[0], claudeCliFixture);
     assert.ok(statusTexts.some((text) => text.includes('正在压缩上下文')));
     assert.ok(statusTexts.some((text) => text.includes('官方 /compact 已完成')));
     assert.ok(events.some((event) => event.type === 'text' && event.data === 'Recovered after compact'));

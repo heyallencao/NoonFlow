@@ -15,6 +15,12 @@ files:
   - "!**/test{,/**/*}"
   - "!**/tests{,/**/*}"
   - "!**/__tests__{,/**/*}"
+  - "!**/@openai/codex-darwin-*{,/**/*}"
+  - "!**/@openai/codex-linux-*{,/**/*}"
+  - "!**/@openai/codex-win32-*{,/**/*}"
+  - "!**/@anthropic-ai/claude-agent-sdk-darwin-*{,/**/*}"
+  - "!**/@anthropic-ai/claude-agent-sdk-linux-*{,/**/*}"
+  - "!**/@anthropic-ai/claude-agent-sdk-win32-*{,/**/*}"
 
 afterSign: scripts/notarize-after-sign.cjs
 
@@ -23,6 +29,12 @@ extraResources:
     to: standalone
     filter:
       - "**/*"
+      - "!**/@openai/codex-darwin-*{,/**/*}"
+      - "!**/@openai/codex-linux-*{,/**/*}"
+      - "!**/@openai/codex-win32-*{,/**/*}"
+      - "!**/@anthropic-ai/claude-agent-sdk-darwin-*{,/**/*}"
+      - "!**/@anthropic-ai/claude-agent-sdk-linux-*{,/**/*}"
+      - "!**/@anthropic-ai/claude-agent-sdk-win32-*{,/**/*}"
   - from: electron/icons
     to: electron/icons
     filter:

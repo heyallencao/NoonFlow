@@ -10,8 +10,6 @@ let importVersion = 0;
 let testCodexHome: string | null = null;
 const ORIGINAL_CODEX_BACKEND = process.env.NOONFLOW_CODEX_BACKEND;
 const ORIGINAL_PUBLIC_CODEX_BACKEND = process.env.NEXT_PUBLIC_NOONFLOW_CODEX_BACKEND;
-const ORIGINAL_CODEX_BUNDLED_ENABLE = process.env.NOONFLOW_ENABLE_CODEX_BUNDLED;
-const ORIGINAL_PUBLIC_CODEX_BUNDLED_ENABLE = process.env.NEXT_PUBLIC_NOONFLOW_ENABLE_CODEX_BUNDLED;
 
 function getTestCodexBinaryPath(): string {
   if (!testCodexHome) {
@@ -78,20 +76,172 @@ afterEach(() => {
     process.env.NEXT_PUBLIC_NOONFLOW_CODEX_BACKEND = ORIGINAL_PUBLIC_CODEX_BACKEND;
   }
 
-  if (ORIGINAL_CODEX_BUNDLED_ENABLE === undefined) {
-    delete process.env.NOONFLOW_ENABLE_CODEX_BUNDLED;
-  } else {
-    process.env.NOONFLOW_ENABLE_CODEX_BUNDLED = ORIGINAL_CODEX_BUNDLED_ENABLE;
-  }
-
-  if (ORIGINAL_PUBLIC_CODEX_BUNDLED_ENABLE === undefined) {
-    delete process.env.NEXT_PUBLIC_NOONFLOW_ENABLE_CODEX_BUNDLED;
-  } else {
-    process.env.NEXT_PUBLIC_NOONFLOW_ENABLE_CODEX_BUNDLED = ORIGINAL_PUBLIC_CODEX_BUNDLED_ENABLE;
-  }
-
   // Reuse the same temporary Codex home across tests so the binary path stays
   // aligned with platform.ts's positive binary lookup cache.
+});
+
+describe('Windows Codex SDK executable resolution', () => {
+  it('resolves an npm codex.cmd wrapper to the installed x64 native executable', async () => {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'noonflow-codex-win32-x64-'));
+    const wrapperPath = path.join(fixtureRoot, 'codex.cmd');
+    const codexEntrypoint = path.join(
+      fixtureRoot,
+      'node_modules',
+      '@openai',
+      'codex',
+      'bin',
+      'codex.js',
+    );
+    const platformPackageRoot = path.join(
+      fixtureRoot,
+      'node_modules',
+      '@openai',
+      'codex-win32-x64',
+    );
+    const nativeExecutable = path.join(
+      platformPackageRoot,
+      'vendor',
+      'x86_64-pc-windows-msvc',
+      'bin',
+      'codex.exe',
+    );
+    const packageTargetRoot = path.join(
+      platformPackageRoot,
+      'vendor',
+      'x86_64-pc-windows-msvc',
+    );
+    const codexPathDir = path.join(packageTargetRoot, 'codex-path');
+
+    try {
+      fs.mkdirSync(path.dirname(codexEntrypoint), { recursive: true });
+      fs.writeFileSync(codexEntrypoint, '#!/usr/bin/env node\n');
+      fs.mkdirSync(path.dirname(nativeExecutable), { recursive: true });
+      fs.writeFileSync(path.join(platformPackageRoot, 'package.json'), '{}\n');
+      fs.writeFileSync(path.join(packageTargetRoot, 'codex-package.json'), '{}\n');
+      fs.writeFileSync(nativeExecutable, 'fixture');
+      fs.mkdirSync(codexPathDir, { recursive: true });
+      fs.writeFileSync(path.join(codexPathDir, 'rg.exe'), 'fixture');
+      fs.writeFileSync(
+        wrapperPath,
+        '@ECHO off\r\n"%~dp0\\node.exe" "%~dp0\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n',
+      );
+
+      const codexModule = await importFreshCodexClient();
+      const launch = codexModule.__resolveCodexSdkLaunchForTests(
+        wrapperPath,
+        { Path: 'C:\\Windows\\System32', PATH: 'stale-path' },
+        'win32',
+        'x64',
+      );
+      assert.equal(
+        launch.executablePath,
+        fs.realpathSync(nativeExecutable),
+      );
+      assert.equal(
+        launch.env.Path,
+        `${fs.realpathSync(codexPathDir)};C:\\Windows\\System32`,
+      );
+      assert.equal(launch.env.PATH, undefined);
+      assert.equal(launch.env.CODEX_MANAGED_PACKAGE_ROOT, fs.realpathSync(path.dirname(path.dirname(codexEntrypoint))));
+      assert.equal(launch.env.CODEX_MANAGED_BY_NPM, '1');
+      assert.equal(launch.env.CODEX_MANAGED_BY_PNPM, undefined);
+      assert.equal(launch.env.CODEX_MANAGED_BY_BUN, undefined);
+    } finally {
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves the legacy Windows package layout still supported by the Codex SDK', async () => {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'noonflow-codex-win32-legacy-'));
+    const wrapperPath = path.join(fixtureRoot, 'codex.cmd');
+    const codexEntrypoint = path.join(
+      fixtureRoot,
+      'node_modules',
+      '@openai',
+      'codex',
+      'bin',
+      'codex.js',
+    );
+    const packageTargetRoot = path.join(
+      fixtureRoot,
+      'node_modules',
+      '@openai',
+      'codex-win32-x64',
+      'vendor',
+      'x86_64-pc-windows-msvc',
+    );
+    const nativeExecutable = path.join(packageTargetRoot, 'codex', 'codex.exe');
+    const codexPathDir = path.join(packageTargetRoot, 'path');
+
+    try {
+      fs.mkdirSync(path.dirname(codexEntrypoint), { recursive: true });
+      fs.writeFileSync(codexEntrypoint, '#!/usr/bin/env node\n');
+      fs.mkdirSync(path.dirname(nativeExecutable), { recursive: true });
+      fs.writeFileSync(
+        path.join(fixtureRoot, 'node_modules', '@openai', 'codex-win32-x64', 'package.json'),
+        '{}\n',
+      );
+      fs.writeFileSync(nativeExecutable, 'fixture');
+      fs.mkdirSync(codexPathDir, { recursive: true });
+      fs.writeFileSync(path.join(codexPathDir, 'rg.exe'), 'fixture');
+      fs.writeFileSync(
+        wrapperPath,
+        '@ECHO off\r\n"%~dp0\\node.exe" "%~dp0\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n',
+      );
+
+      const codexModule = await importFreshCodexClient();
+      const launch = codexModule.__resolveCodexSdkLaunchForTests(
+        wrapperPath,
+        { PATH: 'C:\\Windows\\System32' },
+        'win32',
+        'x64',
+      );
+
+      assert.equal(launch.executablePath, fs.realpathSync(nativeExecutable));
+      assert.equal(
+        launch.env.PATH,
+        `${fs.realpathSync(codexPathDir)};C:\\Windows\\System32`,
+      );
+      assert.equal(launch.env.CODEX_MANAGED_BY_NPM, '1');
+    } finally {
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('fails clearly when a Windows wrapper cannot resolve its native executable', async () => {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'noonflow-codex-win32-missing-'));
+    const wrapperPath = path.join(fixtureRoot, 'codex.cmd');
+
+    try {
+      fs.writeFileSync(
+        wrapperPath,
+        '@ECHO off\r\n"%~dp0\\node.exe" "%~dp0\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n',
+      );
+
+      const codexModule = await importFreshCodexClient();
+      assert.throws(
+        () => codexModule.__resolveCodexSdkLaunchForTests(wrapperPath, {}, 'win32', 'x64'),
+        /native Windows executable could not be resolved.*Reinstall Codex/i,
+      );
+    } finally {
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('passes native Windows executables through unchanged', async () => {
+    const codexModule = await importFreshCodexClient();
+    const nativeExecutable = 'C:\\Users\\allen\\AppData\\Local\\Codex\\codex.exe';
+    const env = { Path: 'C:\\Windows\\System32' };
+    const launch = codexModule.__resolveCodexSdkLaunchForTests(
+      nativeExecutable,
+      env,
+      'win32',
+      'x64',
+    );
+
+    assert.equal(launch.executablePath, nativeExecutable);
+    assert.equal(launch.env, env);
+  });
 });
 
 describe('streamCodex', () => {
@@ -893,12 +1043,16 @@ exit 42
     }
   });
 
-  it('runs sdk-bundled backend without requiring a local codex binary override', async () => {
+  it('normalizes the removed sdk-bundled value to sdk-system-cli and passes the external path', async () => {
     const originalHome = process.env.HOME;
+    const binaryPath = getTestCodexBinaryPath();
+    const binaryDir = path.dirname(binaryPath);
     process.env.NOONFLOW_CODEX_BACKEND = 'sdk-bundled';
-    process.env.NOONFLOW_ENABLE_CODEX_BUNDLED = 'true';
     delete process.env.NEXT_PUBLIC_NOONFLOW_CODEX_BACKEND;
-    process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'monolith-codex-sdk-bundled-home-'));
+    fs.mkdirSync(binaryDir, { recursive: true });
+    fs.writeFileSync(binaryPath, '#!/bin/sh\nexit 0\n');
+    fs.chmodSync(binaryPath, 0o755);
+    process.env.HOME = testCodexHome!;
 
     try {
       const codexModule = await importFreshCodexClient();
@@ -917,13 +1071,13 @@ exit 42
           return {
             runStreamed: async () => ({
               events: createThreadEventsStream([
-                { type: 'thread.started', thread_id: 'sdk-thread-bundled' },
+                { type: 'thread.started', thread_id: 'sdk-thread-system-only' },
                 { type: 'turn.started' },
                 {
                   type: 'item.completed',
                   item: {
                     id: 'item_1',
-                    details: { type: 'agent_message', text: '✓ sdk bundled backend ok' },
+                    details: { type: 'agent_message', text: '✓ sdk system-only backend ok' },
                   },
                 },
                 { type: 'turn.completed', usage: { input_tokens: 2, output_tokens: 4 } },
@@ -940,12 +1094,13 @@ exit 42
       codexModule.__setCodexCtorForTests(FakeCodex as never);
 
       const payload = await readStream(codexModule.streamCodex({
-        prompt: 'Use bundled backend',
-        sessionId: 'session-sdk-bundled',
+        prompt: 'Use system backend',
+        sessionId: 'session-sdk-system-only',
       }));
 
-      assert.match(payload, /"type":"text","data":"✓ sdk bundled backend ok"/);
-      assert.equal(captured.clientOptions?.codexPathOverride, undefined);
+      assert.match(payload, /"type":"text","data":"✓ sdk system-only backend ok"/);
+      assert.equal(captured.clientOptions?.codexPathOverride, binaryPath);
+      assert.equal(path.isAbsolute(String(captured.clientOptions?.codexPathOverride)), true);
       assert.equal(captured.threadOptions?.skipGitRepoCheck, true);
       assert.ok(
         captured.threadOptions?.sandboxMode === 'workspace-write'
@@ -956,12 +1111,16 @@ exit 42
     }
   });
 
-  it('falls back from sdk-bundled resume to fresh turn before first event', async () => {
+  it('keeps the external CLI override when SDK resume falls back to a fresh turn', async () => {
     const originalHome = process.env.HOME;
-    process.env.NOONFLOW_CODEX_BACKEND = 'sdk-bundled';
-    process.env.NOONFLOW_ENABLE_CODEX_BUNDLED = 'true';
+    const binaryPath = getTestCodexBinaryPath();
+    const binaryDir = path.dirname(binaryPath);
+    process.env.NOONFLOW_CODEX_BACKEND = 'sdk-system-cli';
     delete process.env.NEXT_PUBLIC_NOONFLOW_CODEX_BACKEND;
-    process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'monolith-codex-sdk-bundled-fallback-home-'));
+    fs.mkdirSync(binaryDir, { recursive: true });
+    fs.writeFileSync(binaryPath, '#!/bin/sh\nexit 0\n');
+    fs.chmodSync(binaryPath, 0o755);
+    process.env.HOME = testCodexHome!;
 
     try {
       const codexModule = await importFreshCodexClient();
@@ -984,13 +1143,13 @@ exit 42
           return {
             runStreamed: async () => ({
               events: createThreadEventsStream([
-                { type: 'thread.started', thread_id: 'sdk-thread-bundled-fresh' },
+                { type: 'thread.started', thread_id: 'sdk-thread-system-fresh' },
                 { type: 'turn.started' },
                 {
                   type: 'item.completed',
                   item: {
                     id: 'item_1',
-                    details: { type: 'agent_message', text: '✓ sdk bundled fresh fallback' },
+                    details: { type: 'agent_message', text: '✓ sdk system fresh fallback' },
                   },
                 },
                 { type: 'turn.completed', usage: { input_tokens: 3, output_tokens: 5 } },
@@ -1013,20 +1172,20 @@ exit 42
 
       let invalidationCalls = 0;
       const payload = await readStream(codexModule.streamCodex({
-        prompt: 'Retry bundled turn',
-        sessionId: 'session-sdk-bundled-fallback',
+        prompt: 'Retry system CLI turn',
+        sessionId: 'session-sdk-system-fallback',
         sdkSessionId: 'thread-stale',
         onSessionIdInvalidated: () => {
           invalidationCalls += 1;
         },
       }));
 
-      assert.equal(captured.clientOptions?.codexPathOverride, undefined);
+      assert.equal(captured.clientOptions?.codexPathOverride, binaryPath);
       assert.equal(captured.resumeCalls, 1);
       assert.equal(captured.startCalls, 1);
       assert.equal(invalidationCalls, 1);
       assert.match(payload, /Session fallback/);
-      assert.match(payload, /"type":"text","data":"✓ sdk bundled fresh fallback"/);
+      assert.match(payload, /"type":"text","data":"✓ sdk system fresh fallback"/);
     } finally {
       resetTestCodexHome(originalHome);
     }
@@ -1095,20 +1254,29 @@ printf '%s\\n' \
     }
   });
 
-  it('rejects sdk-bundled backend unless explicitly enabled', async () => {
+  it('does not let the removed sdk-bundled value bypass a broken system CLI path', async () => {
+    const originalHome = process.env.HOME;
+    const binaryPath = getTestCodexBinaryPath();
+    const binaryDir = path.dirname(binaryPath);
     process.env.NOONFLOW_CODEX_BACKEND = 'sdk-bundled';
-    delete process.env.NOONFLOW_ENABLE_CODEX_BUNDLED;
     delete process.env.NEXT_PUBLIC_NOONFLOW_CODEX_BACKEND;
-    delete process.env.NEXT_PUBLIC_NOONFLOW_ENABLE_CODEX_BUNDLED;
+    fs.mkdirSync(binaryDir, { recursive: true });
+    fs.writeFileSync(binaryPath, '#!/definitely/missing/interpreter\n');
+    fs.chmodSync(binaryPath, 0o755);
+    process.env.HOME = testCodexHome!;
 
-    const { streamCodex } = await importFreshCodexClient();
-    const payload = await readStream(streamCodex({
-      prompt: 'Use bundled backend without gate',
-      sessionId: 'session-sdk-bundled-gated',
-    }));
+    try {
+      const { streamCodex } = await importFreshCodexClient();
+      const payload = await readStream(streamCodex({
+        prompt: 'Do not fall back to bundled Codex',
+        sessionId: 'session-no-bundled-fallback',
+      }));
 
-    assert.match(payload, /"type":"error","data":"Codex backend/);
-    assert.match(payload, /sdk-bundled/);
-    assert.match(payload, /NOONFLOW_ENABLE_CODEX_BUNDLED=true/);
+      assert.match(payload, /ENOENT|Failed to start Codex CLI|spawn/i);
+      assert.doesNotMatch(payload, /bundled backend ok/);
+      assert.match(payload, /"type":"done"/);
+    } finally {
+      resetTestCodexHome(originalHome);
+    }
   });
 });

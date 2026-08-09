@@ -3,6 +3,14 @@ import path from 'path';
 
 import { findClaudeBinary } from '../platform';
 
+let claudePathResolverForTests: (() => string | undefined) | null = null;
+
+export function __setClaudePathResolverForTests(
+  resolver: (() => string | undefined) | null,
+): void {
+  claudePathResolverForTests = resolver;
+}
+
 /**
  * Sanitize a string for use as an environment variable value.
  * Removes null bytes and control characters that cause spawn EINVAL.
@@ -60,14 +68,12 @@ export function resolveScriptFromCmd(cmdPath: string): string | undefined {
   return undefined;
 }
 
-let cachedClaudePath: string | null | undefined;
-
 export function findClaudePath(): string | undefined {
-  if (cachedClaudePath !== undefined) {
-    return cachedClaudePath || undefined;
+  if (claudePathResolverForTests) {
+    return claudePathResolverForTests();
   }
-
-  const found = findClaudeBinary();
-  cachedClaudePath = found ?? null;
-  return found;
+  // platform.findClaudeBinary already caches positive results briefly and
+  // deliberately does not cache misses, so a newly installed CLI is visible
+  // on the next conversation attempt without restarting NoonFlow.
+  return findClaudeBinary();
 }

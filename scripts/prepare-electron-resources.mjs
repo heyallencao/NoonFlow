@@ -66,6 +66,10 @@ const RUNTIME_MODULES = ['node-pty', 'better-sqlite3', 'bindings', 'file-uri-to-
 // Dev-only modules that should be removed from runtime to reduce bundle size.
 // These are dependencies that Next.js tracing incorrectly includes but are not needed at runtime.
 const DEV_ONLY_MODULES = ['typescript', 'tsx'];
+const EXTERNAL_CLI_RUNTIME_PACKAGE_PATTERNS = [
+  { scope: '@openai', pattern: /^codex-(?:darwin|linux|win32)-/ },
+  { scope: '@anthropic-ai', pattern: /^claude-agent-sdk-(?:darwin|linux|win32)-/ },
+];
 
 function relocateStandaloneNodeModules() {
   if (!fs.existsSync(standaloneNodeModulesDst)) {
@@ -99,6 +103,39 @@ function cleanDevModulesFromRuntime() {
   if (fs.existsSync(typesPath)) {
     console.log('  Removing @types (type definitions not needed at runtime)');
     fs.rmSync(typesPath, { recursive: true, force: true });
+  }
+}
+
+function pruneExternalCliRuntimePackages() {
+  const nodeModulesRoots = [];
+
+  function collectNodeModulesRoots(dir) {
+    if (!fs.existsSync(dir)) return;
+
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const abs = path.join(dir, entry.name);
+      if (entry.name === 'node_modules' || entry.name === 'runtime_node_modules') {
+        nodeModulesRoots.push(abs);
+      }
+      collectNodeModulesRoots(abs);
+    }
+  }
+
+  collectNodeModulesRoots(standaloneDst);
+
+  for (const nodeModulesRoot of nodeModulesRoots) {
+    for (const { scope, pattern } of EXTERNAL_CLI_RUNTIME_PACKAGE_PATTERNS) {
+      const scopePath = path.join(nodeModulesRoot, scope);
+      if (!fs.existsSync(scopePath)) continue;
+
+      for (const packageName of fs.readdirSync(scopePath)) {
+        if (!pattern.test(packageName)) continue;
+        const packagePath = path.join(scopePath, packageName);
+        console.log(`  Removing external CLI runtime package: ${path.relative(standaloneDst, packagePath)}`);
+        fs.rmSync(packagePath, { recursive: true, force: true });
+      }
+    }
   }
 }
 
@@ -273,6 +310,7 @@ function main() {
   copyRecursive(standaloneSrc, standaloneDst);
   relocateStandaloneNodeModules();
   cleanDevModulesFromRuntime();
+  pruneExternalCliRuntimePackages();
   pruneStandaloneModulesThatShouldResolveFromAppBundle();
   fs.mkdirSync(path.dirname(staticDst), { recursive: true });
   copyRecursive(staticSrc, staticDst);

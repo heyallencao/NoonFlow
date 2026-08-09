@@ -4,8 +4,6 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_CODEX_BACKEND,
   getCodexBackend,
-  getCodexBackendSupportError,
-  isCodexBundledBackendEnabled,
   normalizeCodexBackend,
 } from '../../lib/codex-backend';
 import {
@@ -17,8 +15,6 @@ const ORIGINAL_CHAT_ROLLOUT = process.env.NOONFLOW_CHAT_ROLLOUT_MODE;
 const ORIGINAL_PUBLIC_CHAT_ROLLOUT = process.env.NEXT_PUBLIC_NOONFLOW_CHAT_ROLLOUT_MODE;
 const ORIGINAL_CODEX_BACKEND = process.env.NOONFLOW_CODEX_BACKEND;
 const ORIGINAL_PUBLIC_CODEX_BACKEND = process.env.NEXT_PUBLIC_NOONFLOW_CODEX_BACKEND;
-const ORIGINAL_CODEX_BUNDLED_ENABLE = process.env.NOONFLOW_ENABLE_CODEX_BUNDLED;
-const ORIGINAL_PUBLIC_CODEX_BUNDLED_ENABLE = process.env.NEXT_PUBLIC_NOONFLOW_ENABLE_CODEX_BUNDLED;
 
 afterEach(() => {
   if (ORIGINAL_CHAT_ROLLOUT === undefined) {
@@ -45,17 +41,6 @@ afterEach(() => {
     process.env.NEXT_PUBLIC_NOONFLOW_CODEX_BACKEND = ORIGINAL_PUBLIC_CODEX_BACKEND;
   }
 
-  if (ORIGINAL_CODEX_BUNDLED_ENABLE === undefined) {
-    delete process.env.NOONFLOW_ENABLE_CODEX_BUNDLED;
-  } else {
-    process.env.NOONFLOW_ENABLE_CODEX_BUNDLED = ORIGINAL_CODEX_BUNDLED_ENABLE;
-  }
-
-  if (ORIGINAL_PUBLIC_CODEX_BUNDLED_ENABLE === undefined) {
-    delete process.env.NEXT_PUBLIC_NOONFLOW_ENABLE_CODEX_BUNDLED;
-  } else {
-    process.env.NEXT_PUBLIC_NOONFLOW_ENABLE_CODEX_BUNDLED = ORIGINAL_PUBLIC_CODEX_BUNDLED_ENABLE;
-  }
 });
 
 describe('chat rollback drills', () => {
@@ -87,20 +72,19 @@ describe('chat rollback drills', () => {
     assert.equal(getCodexBackend(), DEFAULT_CODEX_BACKEND);
 
     process.env.NOONFLOW_CODEX_BACKEND = 'sdk-bundled';
-    assert.equal(getCodexBackend(), 'sdk-bundled');
+    assert.equal(getCodexBackend(), 'sdk-system-cli');
 
     process.env.NEXT_PUBLIC_NOONFLOW_CODEX_BACKEND = 'sdk-system-cli';
     assert.equal(getCodexBackend(), 'sdk-system-cli');
   });
 
-  it('keeps backends selectable while gating sdk-bundled behind explicit enablement', () => {
-    assert.equal(getCodexBackendSupportError('legacy-cli'), null);
-    assert.equal(getCodexBackendSupportError('sdk-system-cli'), null);
-    assert.match(getCodexBackendSupportError('sdk-bundled') || '', /NOONFLOW_ENABLE_CODEX_BUNDLED=true/);
-
+  it('does not expose a bundled backend or revive it through the removed enable switch', () => {
     process.env.NOONFLOW_ENABLE_CODEX_BUNDLED = 'true';
-    assert.equal(isCodexBundledBackendEnabled(), true);
-    assert.equal(getCodexBackendSupportError('sdk-bundled'), null);
+    process.env.NOONFLOW_CODEX_BACKEND = 'sdk-bundled';
+    delete process.env.NEXT_PUBLIC_NOONFLOW_CODEX_BACKEND;
+
+    assert.equal(normalizeCodexBackend('sdk-bundled'), 'sdk-system-cli');
+    assert.equal(getCodexBackend(), 'sdk-system-cli');
   });
 
   it('still supports rolling codex backend back to legacy-cli explicitly', () => {
