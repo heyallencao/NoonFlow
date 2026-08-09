@@ -131,6 +131,25 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
       };
 
       try {
+        const detectedClaudePath = findClaudePath();
+        if (!detectedClaudePath) {
+          throw new Error(
+            'Claude Code CLI not found. Install Claude Code and sign in before starting a conversation.',
+          );
+        }
+
+        let claudeExecutablePath = detectedClaudePath;
+        const detectedClaudeExtension = path.extname(detectedClaudePath).toLowerCase();
+        if (detectedClaudeExtension === '.cmd' || detectedClaudeExtension === '.bat') {
+          const resolvedScriptPath = resolveScriptFromCmd(detectedClaudePath);
+          if (!resolvedScriptPath) {
+            throw new Error(
+              `Claude Code CLI wrapper could not be resolved to an executable script: ${detectedClaudePath}`,
+            );
+          }
+          claudeExecutablePath = resolvedScriptPath;
+        }
+
         const persistRecoveryMetrics = async (patch: ContextBudgetRecoveryMetrics) => {
           if (patch.officialCompactAttempted !== undefined) {
             recoveryMetrics.officialCompactAttempted = recoveryMetrics.officialCompactAttempted || patch.officialCompactAttempted;
@@ -271,6 +290,7 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
           // Note: Environment variables from activeProvider take precedence
           // over those in settings.json due to how sdkEnv is constructed above.
           settingSources: ['user', 'project', 'local'],
+          pathToClaudeCodeExecutable: claudeExecutablePath,
         };
 
         queryOptions.thinking = reasoningEnabled
@@ -283,25 +303,6 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
 
         if (skipPermissions) {
           queryOptions.allowDangerouslySkipPermissions = true;
-        }
-
-        // Find claude binary for packaged app where PATH is limited.
-        // On Windows, npm installs Claude CLI as a .cmd wrapper which cannot
-        // be spawned directly without shell:true. Parse the wrapper to
-        // extract the real .js script path and pass that to the SDK instead.
-        const claudePath = findClaudePath();
-        if (claudePath) {
-          const ext = path.extname(claudePath).toLowerCase();
-          if (ext === '.cmd' || ext === '.bat') {
-            const scriptPath = resolveScriptFromCmd(claudePath);
-            if (scriptPath) {
-              queryOptions.pathToClaudeCodeExecutable = scriptPath;
-            } else {
-              console.warn('[claude-client] Could not resolve .js path from .cmd wrapper, falling back to SDK resolution:', claudePath);
-            }
-          } else {
-            queryOptions.pathToClaudeCodeExecutable = claudePath;
-          }
         }
 
         if (model) {
@@ -656,8 +657,8 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
                       ? block.content
                       : Array.isArray(block.content)
                         ? block.content
-                            .filter((c: { type: string }) => c.type === 'text')
-                            .map((c: { text: string }) => c.text)
+                            .map((c) => c.type === 'text' ? c.text : '')
+                            .filter(Boolean)
                             .join('\n')
                         : String(block.content ?? '');
                     controller.enqueue(formatSSE({

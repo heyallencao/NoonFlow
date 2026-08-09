@@ -16,6 +16,20 @@ import type {
 import { isImageFile } from '@/types';
 import { getProjectUploadDir } from '@/lib/upload-paths';
 
+type ClaudeImageMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+
+function normalizeClaudeImageMediaType(mediaType?: string): ClaudeImageMediaType {
+  if (
+    mediaType === 'image/png'
+    || mediaType === 'image/jpeg'
+    || mediaType === 'image/gif'
+    || mediaType === 'image/webp'
+  ) {
+    return mediaType;
+  }
+  return 'image/png';
+}
+
 /**
  * Format an SSE line from an event object.
  */
@@ -200,7 +214,7 @@ export function buildFinalPrompt({
       })();
 
   const contentBlocks: Array<
-    | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+    | { type: 'image'; source: { type: 'base64'; media_type: ClaudeImageMediaType; data: string } }
     | { type: 'text'; text: string }
   > = [];
 
@@ -209,7 +223,7 @@ export function buildFinalPrompt({
       type: 'image',
       source: {
         type: 'base64',
-        media_type: imageFile.type || 'image/png',
+        media_type: normalizeClaudeImageMediaType(imageFile.type),
         data: imageFile.data,
       },
     });

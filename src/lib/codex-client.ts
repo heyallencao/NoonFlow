@@ -1,12 +1,15 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'os';
+import path from 'node:path';
 import { getExpandedPath, findCodexBinary } from './platform';
 import { getShellEnvironment } from './environment';
 import { CODEX_AUTH_MODE_KEY, inferAssistantAuthMode } from './assistant-auth';
 import { getSetting } from './db';
 import { isDangerouslySkipPermissionsEnabled } from './assistant-permissions';
 import { resolvePreferredCodexModel } from './codex-model';
-import { getCodexBackend, getCodexBackendSupportError, type CodexBackend } from './codex-backend';
+import { getCodexBackend } from './codex-backend';
 import {
   appendCodexDelta,
   buildCodexThreadStartedStatusEvent,
@@ -31,6 +34,220 @@ interface CodexOptions {
   apiKey?: string;
   config?: CodexConfigObject;
   env?: Record<string, string>;
+}
+
+const WINDOWS_CODEX_TARGETS: Partial<Record<NodeJS.Architecture, {
+  packageName: string;
+  targetTriple: string;
+}>> = {
+  x64: {
+    packageName: '@openai/codex-win32-x64',
+    targetTriple: 'x86_64-pc-windows-msvc',
+  },
+  arm64: {
+    packageName: '@openai/codex-win32-arm64',
+    targetTriple: 'aarch64-pc-windows-msvc',
+  },
+};
+
+type CodexManagedPackageManager = 'NPM' | 'PNPM' | 'BUN';
+
+interface WindowsCodexNativePackage {
+  executablePath: string;
+  pathDirs: string[];
+  managedPackageRoot: string;
+  managedBy: CodexManagedPackageManager;
+}
+
+interface CodexSdkLaunchConfig {
+  executablePath: string;
+  env: NodeJS.ProcessEnv;
+}
+
+function isFile(targetPath: string): boolean {
+  try {
+    return fs.statSync(targetPath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function existingDirectories(...targetPaths: string[]): string[] {
+  return targetPaths.filter((targetPath) => {
+    try {
+      return fs.statSync(targetPath).isDirectory();
+    } catch {
+      return false;
+    }
+  });
+}
+
+function findCodexEntrypointFromWindowsWrapper(wrapperPath: string): string | undefined {
+  let wrapperSource: string;
+  try {
+    wrapperSource = fs.readFileSync(wrapperPath, 'utf8');
+  } catch {
+    return undefined;
+  }
+
+  const entrypointMatch = wrapperSource.match(
+    /%(?:~dp0|dp0%)[\\/]+([^"'\r\n]*?node_modules[\\/]@openai[\\/]codex[\\/]bin[\\/]codex\.js)/i,
+  );
+  if (!entrypointMatch) {
+    return undefined;
+  }
+
+  const relativeEntrypoint = entrypointMatch[1].replace(/[\\/]+/g, path.sep);
+  return path.resolve(path.dirname(wrapperPath), relativeEntrypoint);
+}
+
+function detectCodexPackageManager(
+  codexEntrypoint: string,
+  codexPackageRoot: string,
+): CodexManagedPackageManager {
+  const normalizedPaths = [codexEntrypoint, codexPackageRoot]
+    .map((targetPath) => targetPath.replace(/\\/g, '/').toLowerCase());
+  if (normalizedPaths.some((targetPath) => targetPath.includes('/.bun/install/global/'))) {
+    return 'BUN';
+  }
+  if (normalizedPaths.some((targetPath) => targetPath.includes('/.pnpm/'))) {
+    return 'PNPM';
+  }
+  return 'NPM';
+}
+
+function findWindowsCodexNativePackage(
+  wrapperPath: string,
+  architecture: NodeJS.Architecture,
+): WindowsCodexNativePackage | undefined {
+  const target = WINDOWS_CODEX_TARGETS[architecture];
+  if (!target) {
+    return undefined;
+  }
+
+  const codexEntrypoint = findCodexEntrypointFromWindowsWrapper(wrapperPath);
+  if (!codexEntrypoint) {
+    return undefined;
+  }
+
+  const lexicalCodexPackageRoot = path.dirname(path.dirname(codexEntrypoint));
+  let managedPackageRoot = lexicalCodexPackageRoot;
+  try {
+    managedPackageRoot = fs.realpathSync(lexicalCodexPackageRoot);
+  } catch {
+    // A stale wrapper will fail native package resolution below.
+  }
+
+  const packageRoots = new Set<string>();
+  try {
+    const requireFromCodex = createRequire(codexEntrypoint);
+    const packageJsonPath = requireFromCodex.resolve(`${target.packageName}/package.json`);
+    packageRoots.add(path.dirname(packageJsonPath));
+  } catch {
+    // Fall back to the normal npm sibling layout below.
+  }
+
+  packageRoots.add(path.join(
+    path.dirname(lexicalCodexPackageRoot),
+    path.basename(target.packageName),
+  ));
+  packageRoots.add(path.join(
+    path.dirname(managedPackageRoot),
+    path.basename(target.packageName),
+  ));
+
+  for (const packageRoot of packageRoots) {
+    const targetRoot = path.join(packageRoot, 'vendor', target.targetTriple);
+    const currentExecutable = path.join(targetRoot, 'bin', 'codex.exe');
+    if (isFile(currentExecutable) && isFile(path.join(targetRoot, 'codex-package.json'))) {
+      return {
+        executablePath: currentExecutable,
+        pathDirs: existingDirectories(path.join(targetRoot, 'codex-path')),
+        managedPackageRoot,
+        managedBy: detectCodexPackageManager(codexEntrypoint, managedPackageRoot),
+      };
+    }
+
+    const legacyExecutable = path.join(targetRoot, 'codex', 'codex.exe');
+    if (isFile(legacyExecutable)) {
+      return {
+        executablePath: legacyExecutable,
+        pathDirs: existingDirectories(path.join(targetRoot, 'path')),
+        managedPackageRoot,
+        managedBy: detectCodexPackageManager(codexEntrypoint, managedPackageRoot),
+      };
+    }
+  }
+
+  return undefined;
+}
+
+function prependCodexPathDirs(
+  env: NodeJS.ProcessEnv,
+  pathDirs: string[],
+  platform: NodeJS.Platform,
+): NodeJS.ProcessEnv {
+  const result = { ...env };
+  if (pathDirs.length === 0) {
+    return result;
+  }
+
+  const matchingPathKeys = Object.keys(result).filter((key) => key.toLowerCase() === 'path');
+  const pathKey = platform === 'win32'
+    ? (matchingPathKeys.includes('Path') ? 'Path' : matchingPathKeys.at(-1) || 'PATH')
+    : 'PATH';
+  if (platform === 'win32') {
+    for (const key of matchingPathKeys) {
+      if (key !== pathKey) {
+        delete result[key];
+      }
+    }
+  }
+
+  const delimiter = platform === 'win32' ? ';' : path.delimiter;
+  const existingEntries = (result[pathKey] || '')
+    .split(delimiter)
+    .filter((entry) => entry && !pathDirs.includes(entry));
+  result[pathKey] = [...pathDirs, ...existingEntries].join(delimiter);
+  return result;
+}
+
+function resolveCodexSdkLaunch(
+  binary: string,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+  architecture: NodeJS.Architecture = process.arch,
+): CodexSdkLaunchConfig {
+  if (platform !== 'win32' || !/\.(?:cmd|bat)$/i.test(binary)) {
+    return { executablePath: binary, env };
+  }
+
+  const nativePackage = findWindowsCodexNativePackage(binary, architecture);
+  if (nativePackage) {
+    const launchEnv = prependCodexPathDirs(env, nativePackage.pathDirs, platform);
+    delete launchEnv.CODEX_MANAGED_BY_NPM;
+    delete launchEnv.CODEX_MANAGED_BY_PNPM;
+    delete launchEnv.CODEX_MANAGED_BY_BUN;
+    launchEnv.CODEX_MANAGED_PACKAGE_ROOT = nativePackage.managedPackageRoot;
+    launchEnv[`CODEX_MANAGED_BY_${nativePackage.managedBy}`] = '1';
+    return {
+      executablePath: nativePackage.executablePath,
+      env: launchEnv,
+    };
+  }
+
+  throw new Error(
+    `Codex CLI wrapper was found, but its native Windows executable could not be resolved: ${binary}. Reinstall Codex with npm install -g @openai/codex.`,
+  );
+}
+
+export function __resolveCodexSdkLaunchForTests(
+  binary: string,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  architecture: NodeJS.Architecture,
+): CodexSdkLaunchConfig {
+  return resolveCodexSdkLaunch(binary, env, platform, architecture);
 }
 
 type CodexApprovalMode = 'never' | 'on-request' | 'on-failure' | 'untrusted';
@@ -376,8 +593,7 @@ function getSdkThreadOptions(params: {
 }
 
 function buildSdkRuntimeConfig(params: {
-  backend: CodexBackend;
-  binary?: string;
+  binary: string;
   settings: CodexClientSettings;
   cwd: string;
   permissionMode?: string;
@@ -392,7 +608,6 @@ function buildSdkRuntimeConfig(params: {
   resumeSessionId?: string;
 }): CodexSdkRuntimeConfig {
   const {
-    backend,
     binary,
     settings,
     cwd,
@@ -429,9 +644,7 @@ function buildSdkRuntimeConfig(params: {
     baseUrl: settings.baseUrl,
   };
 
-  if (backend === 'sdk-system-cli' && binary) {
-    clientOptions.codexPathOverride = binary;
-  }
+  clientOptions.codexPathOverride = binary;
 
   return {
     clientOptions,
@@ -987,9 +1200,8 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
 
       const runSdkAttempt = async (
         params: {
-          backend: CodexBackend;
           resumeSessionId?: string;
-          binary?: string;
+          binary: string;
           cwd: string;
           settings: CodexClientSettings;
           skipPermissions: boolean;
@@ -1000,7 +1212,6 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
         },
       ) => {
         const {
-          backend,
           resumeSessionId,
           binary,
           cwd,
@@ -1017,24 +1228,27 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
           deferredErrorMessage: null,
           nonTerminalErrorMessage: null,
         };
-        const runtimeConfig = buildSdkRuntimeConfig({
-          backend,
-          binary,
-          settings,
-          cwd,
-          skipPermissions,
-          permissionMode,
-          resolvedModel,
-          resolvedReasoningEffort,
-          prompt,
-          systemPrompt,
-          files,
-          conversationHistory,
-          imagePaths,
-          resumeSessionId,
-        });
 
         try {
+          const sdkLaunch = resolveCodexSdkLaunch(binary, settings.env);
+          const runtimeConfig = buildSdkRuntimeConfig({
+            binary: sdkLaunch.executablePath,
+            settings: {
+              ...settings,
+              env: sdkLaunch.env,
+            },
+            cwd,
+            skipPermissions,
+            permissionMode,
+            resolvedModel,
+            resolvedReasoningEffort,
+            prompt,
+            systemPrompt,
+            files,
+            conversationHistory,
+            imagePaths,
+            resumeSessionId,
+          });
           const CodexCtor = await loadCodexCtor();
           const codex = new CodexCtor(runtimeConfig.clientOptions);
           const thread = resumeSessionId
@@ -1081,19 +1295,8 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
         }
 
         const codexBackend = getCodexBackend();
-        const backendSupportError = getCodexBackendSupportError(codexBackend);
-        if (backendSupportError) {
-          emitEvent({
-            type: 'error',
-            data: backendSupportError,
-          });
-          emitDone();
-          closeStream();
-          return;
-        }
-
-        const binary = codexBackend === 'sdk-bundled' ? undefined : findCodexBinary();
-        if (codexBackend !== 'sdk-bundled' && !binary) {
+        const binary = findCodexBinary();
+        if (!binary) {
           emitEvent({ type: 'error', data: 'Codex CLI is not installed' });
           emitDone();
           closeStream();
@@ -1151,7 +1354,6 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
         }
 
         await runSdkAttempt({
-          backend: codexBackend,
           resumeSessionId,
           binary,
           cwd,
