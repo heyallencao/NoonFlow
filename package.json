@@ -1,6 +1,6 @@
 {
   "name": "noonflow",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "private": true,
   "author": "allen.cao",
   "description": "Desktop workspace for local Claude Code and Codex sessions",

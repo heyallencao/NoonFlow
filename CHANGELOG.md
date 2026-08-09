@@ -1,8 +1,8 @@
 # Changelog
 
-## [0.5.1] - 2026-08-09
+## [0.6.0] - 2026-08-09
 
-NoonFlow 0.5.1 is the first tagged public baseline for the focused Claude Code and Codex desktop workspace.
+NoonFlow 0.6.0 is the focused Claude Code and Codex desktop workspace release.
 
 ### Highlights
 
@@ -34,3 +34,7 @@ NoonFlow 0.5.1 is the first tagged public baseline for the focused Claude Code a
 ### Distribution
 
 This is a source release. A notarized macOS binary is not attached because the Apple notarization profile is not configured for this release environment.
+
+## [0.5.1] - 2026-08-08
+
+Initial public source baseline before the focused 0.6.0 feature reduction.
