@@ -59,6 +59,213 @@ after(() => {
 });
 
 describe('streamClaude official compact recovery', () => {
+  it('maps native task events to shared activity updates and does not wall-clock timeout a child agent', async () => {
+    __setClaudePathResolverForTests(() => claudeCliFixture);
+    __setClaudeQueryForTests(() => {
+      const mockedQuery = (async function* () {
+        yield {
+          type: 'system',
+          subtype: 'init',
+          session_id: 'sdk-child-1',
+          model: 'claude-sonnet',
+          tools: ['Task'],
+        } as never;
+        yield {
+          type: 'system',
+          subtype: 'task_started',
+          task_id: 'child-1',
+          tool_use_id: 'parent-tool-1',
+          description: 'Inspect adapters',
+          subagent_type: 'Explore',
+          prompt: 'private child prompt',
+          uuid: 'task-start-1',
+          session_id: 'sdk-child-1',
+        } as never;
+        yield {
+          type: 'tool_progress',
+          tool_use_id: 'parent-tool-1',
+          tool_name: 'Task',
+          elapsed_time_seconds: 999,
+          uuid: 'tool-progress-1',
+          session_id: 'sdk-child-1',
+        } as never;
+        yield {
+          type: 'system',
+          subtype: 'task_progress',
+          task_id: 'child-1',
+          tool_use_id: 'parent-tool-1',
+          description: 'Inspect adapters',
+          subagent_type: 'Explore',
+          summary: 'Checked event flow',
+          usage: { total_tokens: 20, tool_uses: 2, duration_ms: 999_000 },
+          uuid: 'task-progress-1',
+          session_id: 'sdk-child-1',
+        } as never;
+        yield {
+          type: 'system',
+          subtype: 'task_notification',
+          task_id: 'child-1',
+          tool_use_id: 'parent-tool-1',
+          status: 'completed',
+          output_file: '/tmp/child-output',
+          summary: 'Done',
+          uuid: 'task-done-1',
+          session_id: 'sdk-child-1',
+        } as never;
+        yield {
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          num_turns: 1,
+          duration_ms: 1_000_000,
+          usage: {
+            input_tokens: 8,
+            output_tokens: 2,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+          total_cost_usd: 0,
+          session_id: 'sdk-child-1',
+          result: 'done',
+        } as never;
+      })();
+      return mockedQuery as ReturnType<typeof import('@anthropic-ai/claude-agent-sdk').query>;
+    });
+
+    const abortController = new AbortController();
+    const payload = await readStringStream(streamClaude({
+      prompt: 'delegate',
+      sessionId: 'session-child-1',
+      toolTimeoutSeconds: 30,
+      abortController,
+    }));
+    const events = parseSSEEvents(payload);
+    const activities = events
+      .filter((event) => event.type === 'activity.updated')
+      .map((event) => JSON.parse(event.data) as import('../../types').ChildActivity);
+
+    assert.deepEqual(activities.map((activity) => activity.status), ['running', 'running', 'completed']);
+    assert.ok(activities.every((activity) => activity.runtime === 'claude_code'));
+    assert.equal(events.some((event) => event.type === 'tool_timeout'), false);
+    assert.equal(abortController.signal.aborted, false);
+    assert.equal(JSON.stringify(activities).includes('private child prompt'), false);
+  });
+
+  it('retains the configured wall-clock timeout for an ordinary top-level tool', async () => {
+    __setClaudePathResolverForTests(() => claudeCliFixture);
+    __setClaudeQueryForTests(() => {
+      const mockedQuery = (async function* () {
+        yield {
+          type: 'system',
+          subtype: 'task_started',
+          task_id: 'foreground-task-1',
+          tool_use_id: 'ordinary-tool-1',
+          task_type: 'bash',
+          description: 'Run ordinary command',
+          uuid: 'ordinary-task-start-1',
+          session_id: 'sdk-ordinary-1',
+        } as never;
+        yield {
+          type: 'tool_progress',
+          tool_use_id: 'ordinary-tool-1',
+          tool_name: 'Bash',
+          task_id: 'foreground-task-1',
+          elapsed_time_seconds: 31,
+          uuid: 'ordinary-progress-1',
+          session_id: 'sdk-ordinary-1',
+        } as never;
+      })();
+      return mockedQuery as ReturnType<typeof import('@anthropic-ai/claude-agent-sdk').query>;
+    });
+
+    const abortController = new AbortController();
+    const events = parseSSEEvents(await readStringStream(streamClaude({
+      prompt: 'run an ordinary tool',
+      sessionId: 'session-ordinary-1',
+      toolTimeoutSeconds: 30,
+      abortController,
+    })));
+
+    assert.equal(events.filter((event) => event.type === 'tool_timeout').length, 1);
+    assert.equal(events.some((event) => event.type === 'activity.updated'), false);
+    assert.equal(abortController.signal.aborted, true);
+  });
+
+  it('does not wall-clock timeout a background Bash task identified only by task_id', async () => {
+    __setClaudePathResolverForTests(() => claudeCliFixture);
+    __setClaudeQueryForTests(() => {
+      const mockedQuery = (async function* () {
+        yield {
+          type: 'system',
+          subtype: 'background_tasks_changed',
+          tasks: [{ task_id: 'background-bash-1', task_type: 'bash', description: 'Build preview' }],
+          uuid: 'background-start-1',
+          session_id: 'sdk-background-1',
+        } as never;
+        yield {
+          type: 'tool_progress',
+          tool_use_id: 'background-bash-tool-1',
+          tool_name: 'Bash',
+          task_id: 'background-bash-1',
+          elapsed_time_seconds: 999,
+          uuid: 'background-progress-1',
+          session_id: 'sdk-background-1',
+        } as never;
+        yield {
+          type: 'system',
+          subtype: 'background_tasks_changed',
+          tasks: [],
+          uuid: 'background-done-1',
+          session_id: 'sdk-background-1',
+        } as never;
+        yield {
+          type: 'system',
+          subtype: 'task_notification',
+          task_id: 'background-bash-1',
+          status: 'completed',
+          output_file: '/tmp/background-bash-output',
+          summary: 'Build complete',
+          uuid: 'background-terminal-1',
+          session_id: 'sdk-background-1',
+        } as never;
+        yield {
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          num_turns: 1,
+          duration_ms: 1_000_000,
+          usage: {
+            input_tokens: 8,
+            output_tokens: 2,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+          total_cost_usd: 0,
+          session_id: 'sdk-background-1',
+          result: 'done',
+        } as never;
+      })();
+      return mockedQuery as ReturnType<typeof import('@anthropic-ai/claude-agent-sdk').query>;
+    });
+
+    const abortController = new AbortController();
+    const events = parseSSEEvents(await readStringStream(streamClaude({
+      prompt: 'run a background build',
+      sessionId: 'session-background-1',
+      toolTimeoutSeconds: 30,
+      abortController,
+    })));
+
+    assert.equal(events.some((event) => event.type === 'tool_timeout'), false);
+    assert.equal(abortController.signal.aborted, false);
+    assert.deepEqual(
+      events
+        .filter((event) => event.type === 'activity.updated')
+        .map((event) => (JSON.parse(event.data) as import('../../types').ChildActivity).status),
+      ['running', 'completed'],
+    );
+  });
+
   it('runs official /compact and retries the original resumed turn after a context-limit resume failure', async () => {
     const calls: Array<{ prompt: string; resume?: string }> = [];
     const executablePaths: string[] = [];

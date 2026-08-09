@@ -62,6 +62,46 @@ after(() => {
 });
 
 describe('/api/chat widget prompt injection', () => {
+  it('passes an explicit toolTimeout=0 through as disabled instead of replacing it with the default', async () => {
+    assistantRuntimes.assistantRuntimePlatform.findClaudeBinary = () => '/usr/local/bin/claude';
+    assistantRuntimes.assistantRuntimePlatform.getClaudeVersion = async () => 'test-version';
+
+    await settingsRoute.PUT(new Request('http://localhost/api/settings/app', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        settings: {
+          assistant_runtime_enabled_claude_code: 'true',
+          anthropic_auth_token: 'test-token',
+        },
+      }),
+    }) as never);
+
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'monolith-tool-timeout-zero-'));
+    const session = db.createSession(
+      'Tool Timeout Zero', '', '', workspaceDir, 'code', '', 'chat', 'claude_code',
+    );
+    let capturedToolTimeout: number | undefined;
+    claudeClient.__setStreamClaudeForTests((options: import('../../types').ClaudeStreamOptions) => {
+      capturedToolTimeout = options.toolTimeoutSeconds;
+      return mockClaudeStream();
+    }, session.id);
+
+    const response = await route.POST(new Request('http://localhost/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: session.id,
+        content: 'Keep the tool timeout disabled.',
+        toolTimeout: 0,
+      }),
+    }) as never);
+
+    assert.equal(response.status, 200);
+    await readStringStream(response.body as ReadableStream<string> | null);
+    assert.equal(capturedToolTimeout, 0);
+  });
+
   it('injects widget system prompt when setting is enabled and request has visualization intent', async () => {
     assistantRuntimes.assistantRuntimePlatform.findClaudeBinary = () => '/usr/local/bin/claude';
     assistantRuntimes.assistantRuntimePlatform.getClaudeVersion = async () => 'test-version';

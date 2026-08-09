@@ -13,6 +13,7 @@ fs.closeSync(fs.openSync(path.join(tmpDir, 'monolith.db'), 'a'));
 let consumeSSEStream: typeof import('../../hooks/useSSEStream').consumeSSEStream;
 let EventBus: typeof import('../../lib/agent-runtime/event-bus').EventBus;
 let SDKAdapter: typeof import('../../lib/agent-runtime/sdk-adapter').SDKAdapter;
+let RuntimeActivityAdapter: typeof import('../../lib/agent-runtime/sdk-adapter').RuntimeActivityAdapter;
 let Orchestrator: typeof import('../../lib/agent-runtime/orchestrator').Orchestrator;
 let addMessage: typeof import('../../lib/db').addMessage;
 let closeDb: typeof import('../../lib/db').closeDb;
@@ -39,7 +40,7 @@ function createSSEReader(events: Array<{ type: string; data: string }>): Readabl
 before(async () => {
   ({ consumeSSEStream } = await import('../../hooks/useSSEStream'));
   ({ EventBus } = await import('../../lib/agent-runtime/event-bus'));
-  ({ SDKAdapter } = await import('../../lib/agent-runtime/sdk-adapter'));
+  ({ SDKAdapter, RuntimeActivityAdapter } = await import('../../lib/agent-runtime/sdk-adapter'));
   ({ Orchestrator } = await import('../../lib/agent-runtime/orchestrator'));
   ({
     addMessage,
@@ -214,6 +215,30 @@ describe('SDKAdapter', () => {
     assert.equal(userPersistedEvent?.type, 'message.user.persisted');
     assert.equal(userPersistedEvent?.clientMessageId, 'msg-123');
     assert.equal(userPersistedEvent?.messageId, 'db-user-1');
+
+    const activityEvent = adapter.adaptSSEEvent({
+      type: 'activity.updated',
+      data: JSON.stringify({
+        id: 'task-1',
+        parentId: 'tool-parent-1',
+        runtime: 'claude_code',
+        kind: 'subagent',
+        title: 'Inspect runtime events',
+        status: 'running',
+        summary: 'Reading adapters',
+        startedAt: 1700000000000,
+        updatedAt: 1700000000000,
+      }),
+    }, context);
+    assert.equal(activityEvent?.type, 'activity.updated');
+    assert.equal(activityEvent?.activity.id, 'task-1');
+    assert.equal(activityEvent?.activity.parentId, 'tool-parent-1');
+
+    const heartbeatEvent = adapter.adaptSSEEvent({
+      type: 'runtime.heartbeat',
+      data: '',
+    }, context);
+    assert.equal(heartbeatEvent?.type, 'runtime.heartbeat');
   });
 
   it('adapts SDK-native events into the same runtime protocol', () => {
@@ -435,6 +460,205 @@ describe('SDKAdapter', () => {
     assert.equal(strictText, '');
     assert.equal(bridgeFallbackText, '');
     assert.equal(legacyFallbackText, 'legacy-only');
+  });
+});
+
+describe('RuntimeActivityAdapter', () => {
+  it('normalizes Claude task lifecycle and background membership without leaking prompts', () => {
+    let now = 1_000;
+    const adapter = new RuntimeActivityAdapter('claude_code', 'session-claude', () => now);
+    const [started] = adapter.adapt({
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'claude-task-1',
+      tool_use_id: 'parent-tool-1',
+      description: 'Inspect runtime adapters',
+      subagent_type: 'Explore',
+      prompt: 'private full child prompt',
+    });
+    assert.deepEqual(started, {
+      id: 'claude-task-1',
+      parentId: 'parent-tool-1',
+      runtime: 'claude_code',
+      kind: 'subagent',
+      title: 'Inspect runtime adapters',
+      status: 'running',
+      startedAt: 1_000,
+      updatedAt: 1_000,
+    });
+
+    now = 2_000;
+    const [progress] = adapter.adapt({
+      type: 'system',
+      subtype: 'task_progress',
+      task_id: 'claude-task-1',
+      tool_use_id: 'parent-tool-1',
+      description: 'Inspect runtime adapters',
+      subagent_type: 'Explore',
+      summary: 'Mapped two files',
+    });
+    assert.equal(progress?.summary, 'Mapped two files');
+    assert.equal(progress?.startedAt, 1_000);
+
+    now = 3_000;
+    const [completed] = adapter.adapt({
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: 'claude-task-1',
+      tool_use_id: 'parent-tool-1',
+      status: 'completed',
+      summary: 'Done',
+    });
+    assert.equal(completed?.status, 'completed');
+    assert.equal(completed?.title, 'Inspect runtime adapters');
+    assert.equal(JSON.stringify(completed).includes('private full child prompt'), false);
+
+    now = 4_000;
+    const background = adapter.adapt({
+      type: 'system',
+      subtype: 'background_tasks_changed',
+      tasks: [{ task_id: 'background-1', task_type: 'bash', description: 'Build preview' }],
+    });
+    assert.equal(background[0]?.id, 'background-1');
+    assert.equal(background[0]?.kind, 'background');
+    assert.equal(background[0]?.status, 'running');
+
+    now = 5_000;
+    const removedFromBackground = adapter.adapt({
+      type: 'system',
+      subtype: 'background_tasks_changed',
+      tasks: [],
+    });
+    assert.deepEqual(removedFromBackground, []);
+
+    now = 6_000;
+    const [stopped] = adapter.adapt({
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: 'background-1',
+      status: 'stopped',
+      summary: 'Stopped by runtime',
+    });
+    assert.equal(stopped?.kind, 'background');
+    assert.equal(stopped?.status, 'stopped');
+    assert.equal(stopped?.startedAt, 4_000);
+  });
+
+  it('maps Codex collaboration items and Pi agent-level events to the same contract', () => {
+    let codexNow = 5_000;
+    const codex = new RuntimeActivityAdapter('codex', 'session-codex', () => codexNow);
+    const [codexActivity] = codex.adapt({
+      type: 'item.started',
+      item: {
+        id: 'collab-1',
+        type: 'collabAgentToolCall',
+        tool: 'spawnAgent',
+        status: 'inProgress',
+        senderThreadId: 'root-thread',
+        receiverThreadIds: ['thread-child'],
+        agentsStates: { 'thread-child': { status: 'running', message: 'Starting' } },
+      },
+    });
+    assert.equal(codexActivity?.runtime, 'codex');
+    assert.equal(codexActivity?.status, 'running');
+
+    const [subAgentStarted] = codex.adapt({
+      type: 'item.completed',
+      item: {
+        id: 'activity-started',
+        type: 'subAgentActivity',
+        agentThreadId: 'thread-child',
+        agentPath: 'root/tester',
+        kind: 'started',
+      },
+    });
+    codexNow = 5_500;
+    const [subAgentInteracted] = codex.adapt({
+      type: 'item.completed',
+      item: {
+        id: 'activity-interacted',
+        type: 'subAgentActivity',
+        agentThreadId: 'thread-child',
+        agentPath: 'root/tester',
+        kind: 'interacted',
+      },
+    });
+    assert.equal(subAgentStarted?.id, 'thread-child');
+    assert.equal(subAgentStarted?.status, 'running');
+    assert.equal(subAgentInteracted?.id, 'thread-child');
+    assert.equal(subAgentInteracted?.status, 'running');
+    assert.equal(subAgentInteracted?.startedAt, 5_000);
+
+    codexNow = 6_000;
+    const terminalUpdates = codex.adapt({
+      type: 'item.completed',
+      item: {
+        id: 'collab-1',
+        type: 'collabAgentToolCall',
+        tool: 'wait',
+        status: 'completed',
+        senderThreadId: 'root-thread',
+        receiverThreadIds: ['thread-child'],
+        agentsStates: { 'thread-child': { status: 'errored', message: 'Review failed' } },
+      },
+    });
+    assert.deepEqual(terminalUpdates.map((activity) => [activity.id, activity.status]), [
+      ['collab-1', 'completed'],
+      ['thread-child', 'failed'],
+    ]);
+    assert.equal(terminalUpdates[1]?.title, 'tester');
+    assert.equal(terminalUpdates[1]?.summary, 'Review failed');
+    assert.equal(terminalUpdates[1]?.startedAt, 5_000);
+
+    let piNow = 6_000;
+    const pi = new RuntimeActivityAdapter('pi', 'session-pi', () => piNow);
+    const [piStarted] = pi.adapt({ type: 'agent_start' });
+    assert.deepEqual(piStarted, {
+      id: 'session-pi:pi-agent',
+      runtime: 'pi',
+      kind: 'agent',
+      title: 'Pi agent',
+      status: 'running',
+      startedAt: 6_000,
+      updatedAt: 6_000,
+    });
+    assert.equal('parentId' in (piStarted ?? {}), false);
+
+    piNow = 7_000;
+    const [passEnded] = pi.adapt({ type: 'agent_end', willRetry: true });
+    assert.equal(passEnded?.status, 'waiting');
+
+    piNow = 7_500;
+    const [retrying] = pi.adapt({ type: 'auto_retry_start', attempt: 2 });
+    assert.equal(retrying?.status, 'waiting');
+    assert.match(retrying?.summary ?? '', /2/);
+
+    piNow = 8_000;
+    const [retryStarted] = pi.adapt({ type: 'agent_start' });
+    assert.equal(retryStarted?.status, 'running');
+    assert.deepEqual(pi.adapt({
+      type: 'message_end',
+      message: { role: 'assistant', stopReason: 'stop' },
+    }), []);
+    const [retryEnded] = pi.adapt({ type: 'auto_retry_end', success: true, attempt: 2 });
+    assert.equal(retryEnded?.status, 'running');
+
+    piNow = 8_500;
+    const [settled] = pi.adapt({ type: 'agent_settled' });
+    assert.equal(settled?.status, 'completed');
+    assert.equal(settled?.startedAt, 6_000);
+
+    const failedPi = new RuntimeActivityAdapter('pi', 'session-pi-failed', () => 9_000);
+    failedPi.adapt({ type: 'agent_start' });
+    assert.deepEqual(failedPi.adapt({
+      type: 'message_end',
+      message: { role: 'assistant', stopReason: 'error', errorMessage: 'final provider error' },
+    }), []);
+    const [failedPassEnded] = failedPi.adapt({ type: 'agent_end', willRetry: false });
+    assert.equal(failedPassEnded?.status, 'running');
+    const [failedSettled] = failedPi.adapt({ type: 'agent_settled' });
+    assert.equal(failedSettled?.status, 'failed');
+    assert.equal(failedSettled?.summary, 'final provider error');
   });
 });
 

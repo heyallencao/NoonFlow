@@ -23,6 +23,7 @@ import { BatchPlanInlinePreview } from './batch-image-gen/BatchPlanInlinePreview
 import { WidgetRenderer } from './WidgetRenderer';
 import { WidgetErrorBoundary } from './WidgetErrorBoundary';
 import { MessageReasoning } from './MessageReasoning';
+import { ChildActivityList } from './ChildActivityList';
 import { PENDING_KEY, buildReferenceImages } from '@/lib/image-ref-store';
 import { createWidgetTraceId } from '@/lib/widget-telemetry';
 import {
@@ -34,6 +35,7 @@ import {
 import type { ToolUIPart } from 'ai';
 import type {
   PermissionRequestEvent,
+  ChildActivity,
   PlannerOutput,
   StreamingMessageBlock,
   ToolResultInfo,
@@ -127,6 +129,7 @@ interface StreamingMessageProps {
   onPermissionResponse?: (decision: 'allow' | 'allow_session' | 'deny', updatedInput?: Record<string, unknown>) => void;
   permissionResolved?: 'allow' | 'deny' | null;
   onForceStop?: () => void;
+  childActivities?: ChildActivity[];
 }
 
 export interface StreamingAssistantSupplementalProps {
@@ -140,6 +143,7 @@ export interface StreamingAssistantSupplementalProps {
   onPermissionResponse?: (decision: 'allow' | 'allow_session' | 'deny', updatedInput?: Record<string, unknown>) => void;
   permissionResolved?: 'allow' | 'deny' | null;
   onForceStop?: () => void;
+  childActivities?: ChildActivity[];
 }
 
 function ElapsedTimer({ startedAt }: { startedAt?: number }) {
@@ -557,6 +561,7 @@ export function StreamingAssistantSupplemental({
   onPermissionResponse,
   permissionResolved,
   onForceStop,
+  childActivities = [],
 }: StreamingAssistantSupplementalProps) {
   const { t } = useTranslation();
   const approval = getApproval(pendingPermission, permissionResolved);
@@ -680,6 +685,8 @@ export function StreamingAssistantSupplemental({
         </div>
       )}
 
+      <ChildActivityList activities={childActivities} />
+
       {isStreaming && (
         <StreamingStatusBar
           statusText={
@@ -712,6 +719,7 @@ export function StreamingMessage({
   onPermissionResponse,
   permissionResolved,
   onForceStop,
+  childActivities = [],
 }: StreamingMessageProps) {
   const { t } = useTranslation();
   const batchPlanMessageId = useId();
@@ -1024,6 +1032,7 @@ export function StreamingMessage({
           onPermissionResponse={onPermissionResponse}
           permissionResolved={permissionResolved}
           onForceStop={onForceStop}
+          childActivities={childActivities}
         />
       </MessageContent>
     </AIMessage>

@@ -107,6 +107,12 @@ rl.on('line', (line) => {
     if (scenario === 'multiple-agent-messages') {
       notify('item/completed', { threadId, turnId, item: { type: 'agentMessage', id: 'agent-analysis', text: 'analysis note' } });
     }
+    if (scenario === 'child-activity') {
+      notify('item/started', { threadId, turnId, item: { type: 'collabAgentToolCall', id: 'collab-1', tool: 'spawnAgent', status: 'inProgress', senderThreadId: threadId, receiverThreadIds: ['thread-child'], agentsStates: { 'thread-child': { status: 'running', message: 'Starting tester' } }, prompt: 'private prompt' } });
+      notify('item/completed', { threadId, turnId, item: { type: 'subAgentActivity', id: 'subactivity-started', agentThreadId: 'thread-child', agentPath: 'root/tester', kind: 'started' } });
+      notify('item/completed', { threadId, turnId, item: { type: 'subAgentActivity', id: 'subactivity-interacted', agentThreadId: 'thread-child', agentPath: 'root/tester', kind: 'interacted' } });
+      notify('item/completed', { threadId, turnId, item: { type: 'collabAgentToolCall', id: 'collab-1', tool: 'spawnAgent', status: 'completed', senderThreadId: threadId, receiverThreadIds: ['thread-child'], agentsStates: { 'thread-child': { status: 'completed', message: 'Tester ready' } } } });
+    }
     finishTurn(turnId);
   } else if (message.method === 'thread/compact/start') {
     const rpcErrorAfterCompleted = scenario === 'context-window-compact-rpc-error-after-completed';

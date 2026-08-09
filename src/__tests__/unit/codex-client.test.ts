@@ -238,6 +238,30 @@ describe('streamCodex app-server', () => {
     }
   });
 
+  it('maps collaboration and subagent items only to shared activity.updated events', async () => {
+    await prepareFake('child-activity');
+    const { streamCodex } = await importFreshCodexClient();
+    const events = parseSSE(await readStream(streamCodex({ prompt: 'delegate', sessionId: 'child-activity' })));
+    const activities = events
+      .filter((event) => event.type === 'activity.updated')
+      .map((event) => JSON.parse(event.data) as import('../../types').ChildActivity);
+
+    assert.deepEqual(activities.map((activity) => [activity.id, activity.status]), [
+      ['collab-1', 'running'],
+      ['thread-child', 'running'],
+      ['thread-child', 'running'],
+      ['thread-child', 'running'],
+      ['collab-1', 'completed'],
+      ['thread-child', 'completed'],
+    ]);
+    assert.equal(activities[2]?.startedAt, activities[1]?.startedAt);
+    assert.equal(activities[3]?.startedAt, activities[1]?.startedAt);
+    assert.equal(activities[5]?.startedAt, activities[1]?.startedAt);
+    assert.ok(activities.every((activity) => activity.runtime === 'codex'));
+    assert.equal(events.some((event) => event.type === 'tool_use' && event.data.includes('collab-1')), false);
+    assert.equal(JSON.stringify(activities).includes('private prompt'), false);
+  });
+
   it('resumes an existing native thread and sends only the new turn', async () => {
     await prepareFake();
     const { streamCodex } = await importFreshCodexClient();

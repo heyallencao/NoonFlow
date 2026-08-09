@@ -89,6 +89,7 @@ export function ChatView({ sessionId }: ChatViewProps) {
   const streamingReasoning = streamSnapshot?.streamingReasoning ?? '';
   const toolUses = streamSnapshot?.toolUses ?? [];
   const toolResults = streamSnapshot?.toolResults ?? [];
+  const childActivities = streamSnapshot?.childActivities ?? [];
   const streamingBlocks = streamSnapshot?.streamingBlocks ?? [];
   const streamingToolOutput = streamSnapshot?.streamingToolOutput ?? '';
   const statusText = streamSnapshot?.statusText;
@@ -354,6 +355,7 @@ export function ChatView({ sessionId }: ChatViewProps) {
           isStreaming={isStreaming}
           toolUses={toolUses}
           toolResults={toolResults}
+          childActivities={childActivities}
           streamingBlocks={streamingBlocks}
           streamingToolOutput={streamingToolOutput}
           statusText={statusText}

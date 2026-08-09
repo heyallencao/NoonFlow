@@ -58,6 +58,29 @@ process.stdin.on('data', (chunk) => {
     if (command.type === 'prompt') {
       send({ type: 'response', id: command.id, success: true });
       send({ type: 'agent_start' });
+      if (scenario === 'retry-success') {
+        send({ type: 'message_end', message: { role: 'assistant', stopReason: 'error', errorMessage: 'temporary provider error', content: [], usage: { input: 1, output: 0 } } });
+        send({ type: 'agent_end', messages: [], willRetry: true });
+        send({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 10, errorMessage: 'temporary provider error' });
+        send({ type: 'agent_start' });
+        send({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Recovered answer' } });
+        send({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Recovered answer' }], usage: { input: 2, output: 3 } } });
+        send({ type: 'auto_retry_end', success: true, attempt: 1 });
+        send({ type: 'agent_end', messages: [], willRetry: false });
+        send({ type: 'agent_settled' });
+        continue;
+      }
+      if (scenario === 'retry-final-failure') {
+        send({ type: 'message_end', message: { role: 'assistant', stopReason: 'error', errorMessage: 'temporary provider error', content: [], usage: { input: 1, output: 0 } } });
+        send({ type: 'agent_end', messages: [], willRetry: true });
+        send({ type: 'auto_retry_start', attempt: 1, maxAttempts: 1, delayMs: 10, errorMessage: 'temporary provider error' });
+        send({ type: 'agent_start' });
+        send({ type: 'message_end', message: { role: 'assistant', stopReason: 'error', errorMessage: 'final provider error', content: [], usage: { input: 2, output: 0 } } });
+        send({ type: 'agent_end', messages: [], willRetry: false });
+        send({ type: 'auto_retry_end', success: false, attempt: 1, finalError: 'final provider error' });
+        send({ type: 'agent_settled' });
+        continue;
+      }
       if (scenario === 'compaction-success') {
         send({ type: 'compaction_start', reason: 'threshold' });
         send({ type: 'compaction_end', reason: 'threshold', result: { summary: 'summary', firstKeptEntryId: 'entry-1', tokensBefore: 900, estimatedTokensAfter: 240 }, aborted: false, willRetry: false });
@@ -151,6 +174,19 @@ describe('streamPi', () => {
     assert.match(payload, /cost_usd\\":0.01/);
     assert.match(payload, /"type":"done"/);
 
+    const activityEvents = payload
+      .split('\n\n')
+      .map((chunk) => chunk.trim())
+      .filter(Boolean)
+      .map((chunk) => JSON.parse(chunk.slice('data: '.length)) as { type: string; data: string })
+      .filter((event) => event.type === 'activity.updated')
+      .map((event) => JSON.parse(event.data) as import('../../types').ChildActivity);
+    assert.deepEqual(activityEvents.map((activity) => activity.status), ['running', 'completed']);
+    assert.ok(activityEvents.every((activity) => activity.runtime === 'pi'));
+    assert.ok(activityEvents.every((activity) => activity.kind === 'agent'));
+    assert.ok(activityEvents.every((activity) => activity.parentId === undefined));
+    assert.equal(activityEvents.some((activity) => activity.id === 'tool-1'), false);
+
     const capture = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as { argv: string[]; commands: Array<Record<string, unknown>> };
     assert.deepEqual(capture.argv.slice(0, 2), ['--mode', 'rpc']);
     assert.ok(capture.argv.includes('--model'));
@@ -174,6 +210,59 @@ describe('streamPi', () => {
       cost_usd: 0.01,
     });
     assert.deepEqual(state?.compaction, { status: 'idle' });
+  });
+
+  it('keeps the Pi process alive through a native retry and completes only after agent_settled', async () => {
+    fakeScenario = 'retry-success';
+    let payload = '';
+    try {
+      payload = await readStream(streamPi({
+        prompt: 'Retry natively',
+        sessionId: 'pi-retry-success',
+        workingDirectory: testDir,
+      }));
+    } finally {
+      fakeScenario = 'normal';
+    }
+
+    assert.match(payload, /Recovered answer/);
+    assert.doesNotMatch(payload, /"type":"error"/);
+    const activities = payload
+      .split('\n\n')
+      .map((chunk) => chunk.trim())
+      .filter(Boolean)
+      .map((chunk) => JSON.parse(chunk.slice('data: '.length)) as { type: string; data: string })
+      .filter((event) => event.type === 'activity.updated')
+      .map((event) => JSON.parse(event.data) as import('../../types').ChildActivity);
+    assert.equal(activities.at(-1)?.status, 'completed');
+    assert.ok(activities.slice(0, -1).every((activity) => activity.status === 'running' || activity.status === 'waiting'));
+    assert.ok(activities.some((activity) => activity.status === 'waiting' && /Retrying/.test(activity.summary || '')));
+  });
+
+  it('reports only the final Pi retry failure and settles the activity as failed', async () => {
+    fakeScenario = 'retry-final-failure';
+    let payload = '';
+    try {
+      payload = await readStream(streamPi({
+        prompt: 'Exhaust native retries',
+        sessionId: 'pi-retry-failure',
+        workingDirectory: testDir,
+      }));
+    } finally {
+      fakeScenario = 'normal';
+    }
+
+    assert.match(payload, /"type":"error","data":"final provider error"/);
+    assert.doesNotMatch(payload, /"type":"error","data":"temporary provider error"/);
+    const activities = payload
+      .split('\n\n')
+      .map((chunk) => chunk.trim())
+      .filter(Boolean)
+      .map((chunk) => JSON.parse(chunk.slice('data: '.length)) as { type: string; data: string })
+      .filter((event) => event.type === 'activity.updated')
+      .map((event) => JSON.parse(event.data) as import('../../types').ChildActivity);
+    assert.equal(activities.at(-1)?.status, 'failed');
+    assert.ok(activities.every((activity) => activity.status !== 'completed'));
   });
 
   it('maps native compaction success and keeps estimated post tokens explicitly approximate', async () => {

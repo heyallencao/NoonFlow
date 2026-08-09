@@ -43,6 +43,7 @@ function createSnapshot(
     error: null,
     finalMessageContent: null,
     ...overrides,
+    childActivities: overrides.childActivities ?? [],
   };
 }
 

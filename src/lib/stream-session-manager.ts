@@ -13,6 +13,7 @@
 import { consumeSSEStream } from '@/hooks/useSSEStream';
 import type {
   AssistantRuntime,
+  ChildActivity,
   ToolUseInfo,
   ToolResultInfo,
   StreamingMessageBlock,
@@ -42,12 +43,13 @@ interface ActiveStream {
   accumulatedReasoning: string;
   toolUsesArray: ToolUseInfo[];
   toolResultsArray: ToolResultInfo[];
+  childActivitiesArray: ChildActivity[];
   streamingBlocks: StreamingMessageBlock[];
   blockSeq: number;
   toolOutputAccumulated: string;
   toolTimeoutInfo: { toolName: string; elapsedSeconds: number } | null;
   isIdleTimeout: boolean;
-  sendMessageFn: ((content: string, files?: FileAttachment[], clientMessageId?: string) => void) | null;
+  backendStopRequested: boolean;
   // Throttle mechanism for smooth rendering
   throttleTimer: ReturnType<typeof setTimeout> | null;
   pendingEmit: boolean;
@@ -68,7 +70,7 @@ export interface StartStreamParams {
   pendingImageNotices?: string[];
   /** Called when SDK mode changes (e.g. plan → code) */
   onModeChanged?: (mode: string) => void;
-  /** Reference to the outer sendMessage so tool-timeout auto-retry works */
+  /** @deprecated Caller compatibility only; ignored so timeout never creates a prompt. */
   sendMessageFn?: (content: string, files?: FileAttachment[], clientMessageId?: string) => void;
 }
 
@@ -117,6 +119,7 @@ function createEmptySnapshot(sessionId: string): SessionStreamSnapshot {
     streamingReasoning: '',
     toolUses: [],
     toolResults: [],
+    childActivities: [],
     streamingBlocks: [],
     streamingToolOutput: '',
     statusText: undefined,
@@ -148,12 +151,13 @@ function createPlaceholderStream(sessionId: string, listeners?: Set<StreamEventL
     accumulatedReasoning: '',
     toolUsesArray: [],
     toolResultsArray: [],
+    childActivitiesArray: [],
     streamingBlocks: [],
     blockSeq: 0,
     toolOutputAccumulated: '',
     toolTimeoutInfo: null,
     isIdleTimeout: false,
-    sendMessageFn: null,
+    backendStopRequested: false,
     throttleTimer: null,
     pendingEmit: false,
     pendingEmitType: null,
@@ -192,6 +196,7 @@ function buildSnapshot(stream: ActiveStream): SessionStreamSnapshot {
     streamingReasoning: stream.accumulatedReasoning,
     toolUses: [...stream.toolUsesArray],
     toolResults: [...stream.toolResultsArray],
+    childActivities: [...stream.childActivitiesArray],
     streamingBlocks: [...stream.streamingBlocks],
     streamingToolOutput: stream.toolOutputAccumulated,
     statusText: stream.snapshot.statusText,
@@ -253,6 +258,7 @@ function resetStreamBuffers(stream: ActiveStream): void {
   stream.accumulatedReasoning = '';
   stream.toolUsesArray = [];
   stream.toolResultsArray = [];
+  stream.childActivitiesArray = [];
   stream.streamingBlocks = [];
   stream.blockSeq = 0;
   stream.toolOutputAccumulated = '';
@@ -450,6 +456,35 @@ function requestBackendStop(sessionId: string): void {
   });
 }
 
+function requestBackendStopOnce(stream: ActiveStream): void {
+  if (stream.backendStopRequested) return;
+  stream.backendStopRequested = true;
+  requestBackendStop(stream.sessionId);
+}
+
+function upsertChildActivity(stream: ActiveStream, activity: ChildActivity): void {
+  const index = stream.childActivitiesArray.findIndex((item) => item.id === activity.id);
+  if (index < 0) {
+    stream.childActivitiesArray = [...stream.childActivitiesArray, activity];
+    return;
+  }
+  const next = [...stream.childActivitiesArray];
+  next[index] = activity;
+  stream.childActivitiesArray = next;
+}
+
+function finishChildActivities(
+  stream: ActiveStream,
+  status: 'completed' | 'failed' | 'stopped',
+): void {
+  const now = Date.now();
+  stream.childActivitiesArray = stream.childActivitiesArray.map((activity) => (
+    activity.status === 'running' || activity.status === 'waiting'
+      ? { ...activity, status, updatedAt: now }
+      : activity
+  ));
+}
+
 // ==========================================
 // Public API
 // ==========================================
@@ -460,6 +495,7 @@ export function startStream(params: StartStreamParams): void {
 
   // If already streaming this session, abort old stream first
   if (existing && existing.snapshot.phase === 'active') {
+    requestBackendStopOnce(existing);
     existing.abortController.abort();
     cleanupTimers(existing);
   }
@@ -477,6 +513,7 @@ export function startStream(params: StartStreamParams): void {
       streamingReasoning: '',
       toolUses: [],
       toolResults: [],
+      childActivities: [],
       streamingBlocks: [],
       streamingToolOutput: '',
       statusText: undefined,
@@ -501,12 +538,13 @@ export function startStream(params: StartStreamParams): void {
     accumulatedReasoning: '',
     toolUsesArray: [],
     toolResultsArray: [],
+    childActivitiesArray: [],
     streamingBlocks: [],
     blockSeq: 0,
     toolOutputAccumulated: '',
     toolTimeoutInfo: null,
     isIdleTimeout: false,
-    sendMessageFn: params.sendMessageFn ?? null,
+    backendStopRequested: false,
     throttleTimer: null,
     pendingEmit: false,
     pendingEmitType: null,
@@ -528,7 +566,7 @@ async function runStream(stream: ActiveStream, params: StartStreamParams): Promi
     if (Date.now() - stream.lastEventTime >= STREAM_IDLE_TIMEOUT_MS) {
       cleanupTimers(stream);
       stream.isIdleTimeout = true;
-      requestBackendStop(stream.sessionId);
+      requestBackendStopOnce(stream);
       stream.abortController.abort();
     }
   }, 10_000);
@@ -714,6 +752,16 @@ async function runStream(stream: ActiveStream, params: StartStreamParams): Promi
         });
         emit(stream, 'snapshot-updated');
       },
+      onActivity: (activity) => {
+        if (!isAcceptingEvents()) return;
+        markActive();
+        upsertChildActivity(stream, activity);
+        emit(stream, 'snapshot-updated');
+      },
+      onHeartbeat: () => {
+        if (!isAcceptingEvents()) return;
+        markActive();
+      },
       onError: (acc, detail) => {
         if (!isAcceptingEvents()) return;
         markActive();
@@ -742,6 +790,7 @@ async function runStream(stream: ActiveStream, params: StartStreamParams): Promi
     stream.toolResultsArray = finalToolResults;
 
     const terminalError = stream.snapshot.error;
+    finishChildActivities(stream, terminalError ? 'failed' : 'completed');
 
     // Update snapshot with completion info
     updateSnapshotFields(stream, {
@@ -779,6 +828,7 @@ async function runStream(stream: ActiveStream, params: StartStreamParams): Promi
           ? stream.accumulatedText.trim() + `\n\n**Error:** Stream idle timeout — no response for ${idleSecs}s. The connection may have dropped.`
           : `**Error:** Stream idle timeout — no response for ${idleSecs}s. The connection may have dropped.`;
         stream.toolResultsArray = buildTerminalToolResults(stream, true);
+        finishChildActivities(stream, 'failed');
         setTerminalTextContent(stream, errText);
 
         updateSnapshotFields(stream, {
@@ -792,12 +842,13 @@ async function runStream(stream: ActiveStream, params: StartStreamParams): Promi
         emitThrottled(stream, 'completed', true);
         scheduleGC(stream);
       } else if (stream.toolTimeoutInfo) {
-        // Tool timeout — auto-retry
+        // Ordinary tool timeout terminates this turn. It never creates a prompt.
         const timeoutInfo = stream.toolTimeoutInfo;
         const partialText = stream.accumulatedText.trim()
           ? stream.accumulatedText.trim() + `\n\n*(tool ${timeoutInfo.toolName} timed out after ${timeoutInfo.elapsedSeconds}s)*`
           : `*(tool ${timeoutInfo.toolName} timed out after ${timeoutInfo.elapsedSeconds}s)*`;
         stream.toolResultsArray = buildTerminalToolResults(stream, true);
+        finishChildActivities(stream, 'stopped');
         setTerminalTextContent(stream, partialText);
 
         updateSnapshotFields(stream, {
@@ -811,22 +862,13 @@ async function runStream(stream: ActiveStream, params: StartStreamParams): Promi
         emit(stream, 'completed');
         scheduleGC(stream);
 
-        // Auto-retry via sendMessageFn
-        if (stream.sendMessageFn) {
-          const fn = stream.sendMessageFn;
-          setTimeout(() => {
-            fn(
-              `The previous tool "${timeoutInfo.toolName}" timed out after ${timeoutInfo.elapsedSeconds} seconds. Please try a different approach to accomplish the task. Avoid repeating the same operation that got stuck.`,
-              undefined,
-            );
-          }, 500);
-        }
       } else {
         // User manually stopped — add partial content with "(generation stopped)"
         const partialText = stream.accumulatedText.trim()
           ? stream.accumulatedText.trim() + '\n\n*(generation stopped)*'
           : '*(generation stopped)*';
         stream.toolResultsArray = buildTerminalToolResults(stream);
+        finishChildActivities(stream, 'stopped');
         setTerminalTextContent(stream, partialText);
 
         updateSnapshotFields(stream, {
@@ -841,11 +883,13 @@ async function runStream(stream: ActiveStream, params: StartStreamParams): Promi
       }
     } else {
       // Non-abort error
+      requestBackendStopOnce(stream);
       const errMsg = error instanceof Error ? error.message : 'Unknown error';
       const errorText = stream.accumulatedText.trim()
         ? `${stream.accumulatedText.trim()}\n\n${buildModelFailureText(errMsg)}`
         : buildModelFailureText(errMsg);
       stream.toolResultsArray = buildTerminalToolResults(stream, true);
+      finishChildActivities(stream, 'failed');
       setTerminalTextContent(stream, errorText);
       updateSnapshotFields(stream, {
         phase: 'error',
@@ -870,13 +914,14 @@ export function stopStream(sessionId: string): void {
   if (stream && stream.snapshot.phase === 'active') {
     // Explicitly stop the backend run and release session lock.
     // Relying only on client-side fetch abort is not enough in all environments.
-    requestBackendStop(sessionId);
+    requestBackendStopOnce(stream);
 
     const stopFallbackSnapshot = () => {
       const partialText = stream.accumulatedText.trim()
         ? stream.accumulatedText.trim() + '\n\n*(generation stopped)*'
         : '*(generation stopped)*';
       stream.toolResultsArray = buildTerminalToolResults(stream);
+      finishChildActivities(stream, 'stopped');
       setTerminalTextContent(stream, partialText);
 
       updateSnapshotFields(stream, {

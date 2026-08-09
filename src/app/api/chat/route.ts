@@ -11,7 +11,7 @@ import { registerActiveChatRun, unregisterActiveChatRun } from '@/lib/active-cha
 import { buildMessagePartInputs, serializeMessageContentBlocks } from '@/lib/message-content';
 import { persistAssistantTerminalStateDirect } from '@/lib/chat/assistant-terminal-persistence';
 import { createCheckpointFlusher } from '@/lib/chat/persistence';
-import { wrapStreamWithSSEEvents } from '@/lib/chat/persisted-sse';
+import { wrapStreamWithHeartbeat, wrapStreamWithSSEEvents } from '@/lib/chat/persisted-sse';
 import { buildConversationHistoryForPrompt } from '@/lib/chat-route-history';
 import { normalizeCodexModel, resolvePreferredCodexModel } from '@/lib/codex-model';
 import { getChatRolloutMode } from '@/lib/chat-rollout';
@@ -783,7 +783,9 @@ export async function POST(request: NextRequest) {
           files: fileAttachments,
           imageAgentMode: !!systemPromptAppend,
           generativeUI: generativeUIEnabled,
-          toolTimeoutSeconds: toolTimeout || 300,
+          toolTimeoutSeconds: typeof toolTimeout === 'number' && Number.isFinite(toolTimeout)
+            ? Math.max(0, toolTimeout)
+            : 300,
           provider: resolvedProvider,
           conversationHistory: historyMsgs,
           loadEmergencyConversationHistory,
@@ -792,8 +794,13 @@ export async function POST(request: NextRequest) {
           },
         });
 
+    // Heartbeats prove transport/runtime liveness without entering persisted history.
+    const liveStream = wrapStreamWithHeartbeat(stream, {
+      intervalMs: 15_000,
+      signal: abortController.signal,
+    });
     // Tee the stream: one for client, one for collecting the response
-    const [streamForClient, streamForCollect] = stream.tee();
+    const [streamForClient, streamForCollect] = liveStream.tee();
 
     // Periodically renew the session lock so long-running tasks don't expire
     const lockRenewalInterval = setInterval(() => {

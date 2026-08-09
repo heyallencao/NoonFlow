@@ -38,6 +38,7 @@ import {
 import { findClaudePath, resolveScriptFromCmd, sanitizeEnv } from './claude-client/env';
 import { toSdkMcpConfig } from './claude-client/mcp';
 import { isDangerouslySkipPermissionsEnabled } from './assistant-permissions';
+import { RuntimeActivityAdapter } from './agent-runtime/sdk-adapter';
 import {
   buildNativeTokenState,
   createUnavailableRuntimeContextState,
@@ -817,10 +818,34 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
 
         let tokenUsage: TokenUsage | null = null;
         const blockTypeByIndex = new Map<number, string>();
+        const activityAdapter = new RuntimeActivityAdapter('claude_code', sessionId);
+        const childActivityToolUseIds = new Set<string>();
+        const childActivityTaskIds = new Set<string>();
 
         for await (const message of conversation) {
           if (abortController?.signal.aborted) {
             break;
+          }
+
+          for (const activity of activityAdapter.adapt(message)) {
+            const active = activity.status === 'running' || activity.status === 'waiting';
+            const protectedTask = activity.kind === 'subagent' || activity.kind === 'background';
+            if (active && protectedTask) {
+              childActivityTaskIds.add(activity.id);
+            } else {
+              childActivityTaskIds.delete(activity.id);
+            }
+            if (activity.parentId) {
+              if (active && protectedTask) {
+                childActivityToolUseIds.add(activity.parentId);
+              } else {
+                childActivityToolUseIds.delete(activity.parentId);
+              }
+            }
+            controller.enqueue(formatSSE({
+              type: 'activity.updated',
+              data: JSON.stringify(activity),
+            }));
           }
 
           switch (message.type) {
@@ -981,8 +1006,14 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
                   elapsed_time_seconds: progressMsg.elapsed_time_seconds,
                 }),
               }));
-              // Auto-timeout: abort if tool runs longer than configured threshold
-              if (toolTimeoutSeconds > 0 && progressMsg.elapsed_time_seconds >= toolTimeoutSeconds) {
+              const childActivityTool = childActivityToolUseIds.has(progressMsg.tool_use_id)
+                || (progressMsg.task_id ? childActivityTaskIds.has(progressMsg.task_id) : false)
+                || progressMsg.tool_name === 'Task'
+                || progressMsg.tool_name === 'Agent'
+                || progressMsg.tool_name === 'TaskOutput';
+              // Ordinary tools retain the wall-clock timeout. Child/background agents
+              // are terminated only by their native terminal event or an explicit Stop.
+              if (!childActivityTool && toolTimeoutSeconds > 0 && progressMsg.elapsed_time_seconds >= toolTimeoutSeconds) {
                 controller.enqueue(formatSSE({
                   type: 'tool_timeout',
                   data: JSON.stringify({

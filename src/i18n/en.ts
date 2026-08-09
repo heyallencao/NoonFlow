@@ -870,6 +870,14 @@ const en = {
   'tool.success': 'success',
   'tool.error': 'error',
 
+  // ── Child activity ──────────────────────────────────────────
+  'activity.title': 'Activity',
+  'activity.status.running': 'running',
+  'activity.status.waiting': 'waiting',
+  'activity.status.completed': 'completed',
+  'activity.status.failed': 'failed',
+  'activity.status.stopped': 'stopped',
+
   // ── Common ──────────────────────────────────────────────────
   'common.cancel': 'Cancel',
   'common.refresh': 'Refresh',
