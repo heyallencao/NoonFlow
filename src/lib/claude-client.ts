@@ -657,7 +657,9 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
                       ? block.content
                       : Array.isArray(block.content)
                         ? block.content
-                            .map((c) => c.type === 'text' ? c.text : '')
+                            .map((c: { type?: string; text?: string }) => (
+                              c.type === 'text' ? c.text || '' : ''
+                            ))
                             .filter(Boolean)
                             .join('\n')
                         : String(block.content ?? '');

@@ -13,6 +13,12 @@ import { cn } from '@/lib/utils';
 import { isImeComposingEvent } from '@/lib/ime';
 import { applyTextInputNavigationKeydown } from '@/lib/text-input-keyboard';
 import { setStoredClaudePreference } from '@/lib/chat-preferences';
+import {
+  composePiModelSelection,
+  PI_THINKING_LEVELS,
+  splitPiModelSelection,
+  type PiThinkingLevel,
+} from '@/lib/pi-model-selection';
 import type { AssistantRuntime, PiModelOption, ProviderModelGroup } from '@/types';
 import type { TranslationKey } from '@/i18n';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card';
@@ -442,6 +448,7 @@ export function ModelSelector({
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const codexModel = splitCodexModel(modelName);
+  const piModel = splitPiModelSelection(currentModelValue);
 
   useEffect(() => {
     if (!modelMenuOpen) return;
@@ -472,7 +479,7 @@ export function ModelSelector({
           onClick={() => setModelMenuOpen((prev) => !prev)}
           tooltip={piModelsError || 'Choose a provider-scoped Pi model'}
         >
-          <span className="max-w-44 truncate text-xs font-medium">{currentModelValue || 'Pi default'}</span>
+          <span className="max-w-44 truncate text-xs font-medium">{piModel.model || 'Pi default'}</span>
           <HugeiconsIcon icon={ArrowDown01Icon} className={cn('h-2.5 w-2.5 transition-transform duration-200', modelMenuOpen && 'rotate-180')} />
         </PromptInputButton>
         {modelMenuOpen && (
@@ -488,7 +495,7 @@ export function ModelSelector({
               <div className="py-0.5">
                 {piModels.map((option) => {
                   const value = option.value || `${option.provider}/${option.id}`;
-                  const isActive = value === currentModelValue;
+                  const isActive = value === piModel.model;
                   return (
                     <button
                       key={value}
@@ -497,7 +504,7 @@ export function ModelSelector({
                         isActive ? 'border-primary/25 bg-accent/62 text-foreground' : 'text-foreground/84 hover:bg-accent/45 hover:text-foreground'
                       )}
                       onClick={() => {
-                        onModelChange?.(value);
+                        onModelChange?.(composePiModelSelection(value, piModel.thinkingLevel));
                         setModelMenuOpen(false);
                       }}
                     >
@@ -674,6 +681,96 @@ export function CodexEffortSelector({ modelName, onModelChange }: CodexEffortSel
                   onClick={() => {
                     onModelChange?.(composeCodexModel(codexModel.baseModel, option.value));
                     setEffortMenuOpen(false);
+                  }}
+                >
+                  <span className="text-xs">{option.label}</span>
+                  {isActive && <span className="text-xs">✓</span>}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const PI_THINKING_OPTIONS: Array<{ value?: PiThinkingLevel; label: string }> = [
+  { label: 'Native' },
+  ...PI_THINKING_LEVELS.map((value) => ({
+    value,
+    label: value === 'xhigh' ? 'XHigh' : value.charAt(0).toUpperCase() + value.slice(1),
+  })),
+];
+
+interface PiThinkingLevelSelectorProps {
+  modelName?: string;
+  fallbackModel: string;
+  onModelChange?: (model: string) => void;
+}
+
+export function PiThinkingLevelSelector({
+  modelName,
+  fallbackModel,
+  onModelChange,
+}: PiThinkingLevelSelectorProps) {
+  const thinkingMenuRef = useRef<HTMLDivElement>(null);
+  const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
+  const selection = splitPiModelSelection(modelName || fallbackModel);
+
+  useEffect(() => {
+    if (!thinkingMenuOpen) return;
+    const handler = (event: MouseEvent) => {
+      if (thinkingMenuRef.current && !thinkingMenuRef.current.contains(event.target as Node)) {
+        setThinkingMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [thinkingMenuOpen]);
+
+  const currentLabel = PI_THINKING_OPTIONS.find(
+    (option) => option.value === selection.thinkingLevel,
+  )?.label || 'Native';
+
+  return (
+    <div className="relative" ref={thinkingMenuRef}>
+      <PromptInputButton
+        className={cn(
+          'gap-1.5 rounded-full border border-transparent text-foreground/74 hover:border-border/62 hover:bg-foreground/[0.07] hover:text-foreground/94',
+          thinkingMenuOpen && 'border-border/75 bg-foreground/[0.1] text-foreground',
+        )}
+        onClick={() => setThinkingMenuOpen((open) => !open)}
+        tooltip="Pi thinking level"
+      >
+        <HugeiconsIcon icon={BrainIcon} className="h-3.5 w-3.5" />
+        <span className="text-xs font-medium">{currentLabel}</span>
+        <HugeiconsIcon
+          icon={ArrowDown01Icon}
+          className={cn('h-2.5 w-2.5 transition-transform duration-200', thinkingMenuOpen && 'rotate-180')}
+        />
+      </PromptInputButton>
+
+      {thinkingMenuOpen && (
+        <div className="absolute bottom-full left-0 z-50 mb-1.5 w-44 overflow-hidden rounded-lg border border-border/70 bg-popover shadow-[0_10px_24px_rgba(0,0,0,0.24)]">
+          <div className="border-b border-border/65 px-3 py-1.5 text-[10px] font-medium text-muted-foreground">
+            Pi Thinking Level
+          </div>
+          <div className="py-0.5">
+            {PI_THINKING_OPTIONS.map((option) => {
+              const isActive = option.value === selection.thinkingLevel;
+              return (
+                <button
+                  key={`pi-thinking-${option.value || 'native'}`}
+                  className={cn(
+                    'flex w-full items-center justify-between gap-2 rounded-md border border-transparent px-3 py-1.5 text-left text-sm transition-colors',
+                    isActive
+                      ? 'border-primary/25 bg-accent/62 text-foreground'
+                      : 'text-foreground/84 hover:bg-accent/45 hover:text-foreground',
+                  )}
+                  onClick={() => {
+                    onModelChange?.(composePiModelSelection(selection.model, option.value));
+                    setThinkingMenuOpen(false);
                   }}
                 >
                   <span className="text-xs">{option.label}</span>

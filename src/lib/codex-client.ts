@@ -64,6 +64,12 @@ interface CodexSdkLaunchConfig {
   env: NodeJS.ProcessEnv;
 }
 
+function createRequireFromPath(filename: string): ReturnType<typeof createRequire> {
+  // Calling through Reflect keeps webpack from treating a runtime-discovered
+  // global Codex entrypoint as a statically analyzable module dependency.
+  return Reflect.apply(createRequire, undefined, [filename]) as ReturnType<typeof createRequire>;
+}
+
 function isFile(targetPath: string): boolean {
   try {
     return fs.statSync(targetPath).isFile();
@@ -140,7 +146,7 @@ function findWindowsCodexNativePackage(
 
   const packageRoots = new Set<string>();
   try {
-    const requireFromCodex = createRequire(codexEntrypoint);
+    const requireFromCodex = createRequireFromPath(codexEntrypoint);
     const packageJsonPath = requireFromCodex.resolve(`${target.packageName}/package.json`);
     packageRoots.add(path.dirname(packageJsonPath));
   } catch {

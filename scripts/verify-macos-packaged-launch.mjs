@@ -123,8 +123,32 @@ function terminateBundleProcesses(appPath) {
   }
 }
 
+function listProcessIdsByName(processName) {
+  const result = spawnSync('pgrep', ['-x', processName], { encoding: 'utf8' });
+  if (result.status === 1) {
+    return [];
+  }
+  if (result.error) {
+    throw result.error;
+  }
+  return result.stdout
+    .split('\n')
+    .map((line) => Number(line.trim()))
+    .filter((pid) => Number.isInteger(pid) && pid > 0);
+}
+
+function terminateProcessIds(processIds) {
+  for (const pid of processIds) {
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch {}
+  }
+}
+
 function launchViaLaunchServices(appPath) {
   return new Promise((resolve, reject) => {
+    const executableName = path.basename(appPath, '.app');
+    const existingMainProcessIds = new Set(listProcessIdsByName(executableName));
     const child = spawn('open', ['-n', appPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
@@ -147,9 +171,16 @@ function launchViaLaunchServices(appPath) {
     child.on('error', reject);
 
     setTimeout(() => {
-      const processes = listBundleProcesses(appPath);
+      const bundleProcesses = listBundleProcesses(appPath);
+      const newMainProcessIds = listProcessIdsByName(executableName)
+        .filter((pid) => !existingMainProcessIds.has(pid));
+      const processes = [
+        ...bundleProcesses,
+        ...newMainProcessIds.map((pid) => `${pid} ${executableName}`),
+      ];
       const running = processes.length > 0;
       terminateBundleProcesses(appPath);
+      terminateProcessIds(newMainProcessIds);
       resolve({
         appPath,
         stdout,
@@ -174,6 +205,7 @@ async function main() {
 
   const appPath = pickNewest(bundles);
   const directResult = await launchExecutable(appPath);
+  terminateBundleProcesses(appPath);
   const directCombined = `${directResult.stdout}\n${directResult.stderr}`.trim();
 
   if (/Failed to reserve virtual memory for CodeRange/i.test(directCombined)) {

@@ -7,6 +7,7 @@ import { getUploadedFilePaths, buildPromptWithHistory, formatSSE } from '@/lib/c
 import { isDangerouslySkipPermissionsEnabled } from '@/lib/assistant-permissions';
 import { getSetting } from '@/lib/db-session';
 import { getShellEnvironment } from '@/lib/environment';
+import { splitPiModelSelection } from '@/lib/pi-model-selection';
 import { findPiBinary, getExpandedPath } from '@/lib/platform';
 import type { FileAttachment, PiStreamOptions, SSEEvent, TokenUsage } from '@/types';
 
@@ -195,7 +196,9 @@ export function streamPi(options: PiStreamOptions): ReadableStream<string> {
       const startAttempt = async (resumeSessionId?: string): Promise<void> => {
         const args = ['--mode', 'rpc'];
         if (resumeSessionId) args.push('--session', resumeSessionId);
-        if (options.model?.trim()) args.push('--model', options.model.trim());
+        const piModelSelection = splitPiModelSelection(options.model);
+        if (piModelSelection.model) args.push('--model', piModelSelection.model);
+        if (piModelSelection.thinkingLevel) args.push('--thinking', piModelSelection.thinkingLevel);
 
         let appendedSystemPrompt = options.systemPrompt?.trim() || '';
         if (options.permissionMode === 'plan') {

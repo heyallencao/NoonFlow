@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { parseWindowsPiShimScript, piClientPlatform, resolveWindowsPiNodeCommand, streamPi } from '../../lib/pi-client';
+import { composePiModelSelection, splitPiModelSelection } from '../../lib/pi-model-selection';
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'noonflow-pi-rpc-'));
 const fakePiPath = path.join(testDir, 'fake-pi.cjs');
@@ -80,6 +81,21 @@ after(() => {
 });
 
 describe('streamPi', () => {
+  it('round-trips provider-scoped model selections with native thinking levels', () => {
+    assert.deepEqual(
+      splitPiModelSelection('openai-codex/gpt-5.6-sol:xhigh'),
+      { model: 'openai-codex/gpt-5.6-sol', thinkingLevel: 'xhigh' },
+    );
+    assert.equal(
+      composePiModelSelection('openai-codex/gpt-5.6-sol:low', 'max'),
+      'openai-codex/gpt-5.6-sol:max',
+    );
+    assert.deepEqual(
+      splitPiModelSelection('custom/model:preview'),
+      { model: 'custom/model:preview' },
+    );
+  });
+
   it('recognizes the standard npm Windows command shim', () => {
     assert.equal(
       parseWindowsPiShimScript('@ECHO off\r\n"%_prog%" "%dp0%\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js" %*\r\n'),
@@ -97,7 +113,7 @@ describe('streamPi', () => {
     const payload = await readStream(streamPi({
       prompt: 'Inspect the repo',
       sessionId: 'local-session',
-      model: 'test-model',
+      model: 'test-model:high',
       systemPrompt: 'Stay concise',
       workingDirectory: testDir,
       permissionMode: 'plan',
@@ -115,6 +131,10 @@ describe('streamPi', () => {
 
     const capture = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as { argv: string[]; commands: Array<Record<string, unknown>> };
     assert.deepEqual(capture.argv.slice(0, 2), ['--mode', 'rpc']);
+    assert.ok(capture.argv.includes('--model'));
+    assert.ok(capture.argv.includes('test-model'));
+    assert.ok(capture.argv.includes('--thinking'));
+    assert.ok(capture.argv.includes('high'));
     assert.ok(capture.argv.includes('--tools'));
     assert.ok(capture.argv.includes('read,grep,find,ls'));
     assert.equal(capture.commands[0].type, 'get_state');

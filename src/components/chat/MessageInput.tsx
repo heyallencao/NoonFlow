@@ -30,7 +30,9 @@ import {
   MessageInputPopoverPanel,
   MessageModeToggle,
   ModelSelector,
+  PiThinkingLevelSelector,
 } from './message-input/panels';
+import { splitPiModelSelection } from '@/lib/pi-model-selection';
 import { useInsertPathSubscription } from './message-input/hooks/use-insert-path-subscription';
 import { useKeydownHandler } from './message-input/hooks/use-keydown-handler';
 import { usePopoverController } from './message-input/hooks/use-popover-controller';
@@ -166,6 +168,10 @@ export function MessageInput({
       ? piModelsQuery.data?.default_model || piModelsQuery.data?.models[0]?.value || ''
       : 'codex');
   const currentModelOption = modelOptions.find((model) => model.value === currentModelValue) || modelOptions[0];
+  const piModelSelection = splitPiModelSelection(currentModelValue);
+  const selectedPiModel = piModelsQuery.data?.models.find((model) => (
+    (model.value || `${model.provider}/${model.id}`) === piModelSelection.model
+  ));
   const chatStatus: ChatStatus = isStreaming ? 'streaming' : 'ready';
   const showQuickSkillCards = showQuickSkills && !badge && !inputValue.trim();
   const quickSkillCards = [
@@ -321,6 +327,14 @@ export function MessageInput({
                 {assistantRuntime === 'codex' && (
                   <CodexEffortSelector
                     modelName={modelName}
+                    onModelChange={onModelChange}
+                  />
+                )}
+
+                {assistantRuntime === 'pi' && selectedPiModel?.reasoning && (
+                  <PiThinkingLevelSelector
+                    modelName={modelName}
+                    fallbackModel={currentModelValue}
                     onModelChange={onModelChange}
                   />
                 )}
