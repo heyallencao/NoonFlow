@@ -2,9 +2,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import os from 'os';
 import path from 'node:path';
-import { getExpandedPath, findCodexBinary, getCodexVersion } from './platform';
-import { getShellEnvironment } from './environment';
-import { CODEX_AUTH_MODE_KEY, inferAssistantAuthMode } from './assistant-auth';
+import { findCodexBinary, getCodexVersion } from './platform';
 import { getSetting } from './db';
 import { isDangerouslySkipPermissionsEnabled } from './assistant-permissions';
 import { resolvePreferredCodexModel } from './codex-model';
@@ -30,6 +28,7 @@ import {
 import { registerPendingPermission } from './permission-registry';
 import type { FileAttachment, SSEEvent, TokenUsage } from '@/types';
 import { SETTING_KEYS } from '@/types';
+import { buildCodexRuntimeSettings, type CodexRuntimeSettings } from './codex/runtime-settings';
 
 const WINDOWS_CODEX_TARGETS: Partial<Record<NodeJS.Architecture, {
   packageName: string;
@@ -269,19 +268,14 @@ interface CodexStreamOptions {
   onRuntimeStatusChange?: (status: string) => void;
 }
 
-interface CodexClientSettings {
-  env: NodeJS.ProcessEnv;
-  apiKey?: string;
-  baseUrl?: string;
-}
-
 interface CodexAttemptState {
   resumeSessionId?: string;
   sawConversationEvent: boolean;
   nonTerminalErrorMessage: string | null;
 }
 
-type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+type CodexReasoningEffort = string;
+const CODEX_EFFORT_SEPARATOR = '::effort=';
 const MIN_CODEX_APP_SERVER_VERSION = '0.145.0';
 const COMPACTION_COMPLETION_TIMEOUT_MS = 60_000;
 
@@ -328,7 +322,19 @@ function splitCodexModelAndEffort(
     return {};
   }
 
-  const suffixMatch = normalizedModel.match(/^(.*?)-(xhigh|high|medium|middle|low)$/i);
+  const separatorIndex = normalizedModel.lastIndexOf(CODEX_EFFORT_SEPARATOR);
+  if (separatorIndex > 0) {
+    const baseModel = normalizedModel.slice(0, separatorIndex).trim();
+    const encodedEffort = normalizedModel.slice(separatorIndex + CODEX_EFFORT_SEPARATOR.length);
+    try {
+      const effort = decodeURIComponent(encodedEffort).trim();
+      if (baseModel && effort) return { model: baseModel, effort };
+    } catch {
+      // Fall through to support legacy model-effort values.
+    }
+  }
+
+  const suffixMatch = normalizedModel.match(/^(.*?)-(ultra|max|xhigh|high|medium|middle|low)$/i);
   if (!suffixMatch || !suffixMatch[1]) {
     return { model: normalizedModel };
   }
@@ -345,6 +351,8 @@ function splitCodexModelAndEffort(
     middle: 'medium',
     high: 'high',
     xhigh: 'xhigh',
+    max: 'max',
+    ultra: 'ultra',
   };
 
   return {
@@ -395,63 +403,6 @@ function buildCodexPrompt(
 
   sections.push(prompt);
   return sections.join('\n\n');
-}
-
-async function buildCodexClientSettings(): Promise<CodexClientSettings> {
-  const shellEnv = await getShellEnvironment();
-  // Use shell env as base, but ensure NODE_ENV is always set from process.env
-  const env: NodeJS.ProcessEnv = {
-    ...shellEnv,
-    HOME: shellEnv.HOME || os.homedir(),
-    PATH: shellEnv.PATH || getExpandedPath(),
-    // NODE_ENV is required by ProcessEnv type, always use process.env value
-    NODE_ENV: process.env.NODE_ENV as 'development' | 'production' | 'test',
-  };
-
-  const apiKey = getSetting(SETTING_KEYS.CODEX_AUTH_TOKEN) || undefined;
-  const baseUrl = getSetting(SETTING_KEYS.CODEX_BASE_URL) || undefined;
-  const codexExtraEnv = getSetting(SETTING_KEYS.CODEX_EXTRA_ENV);
-  const authMode = inferAssistantAuthMode({
-    storedMode: getSetting(CODEX_AUTH_MODE_KEY),
-    storedToken: apiKey,
-    storedBaseUrl: baseUrl,
-    envToken: env.OPENAI_API_KEY || env.CODEX_AUTH_TOKEN || env.CODEX_API_KEY,
-    envBaseUrl: env.OPENAI_BASE_URL,
-  });
-
-  if (authMode === 'login') {
-    delete env.OPENAI_API_KEY;
-    delete env.CODEX_API_KEY;
-    delete env.CODEX_AUTH_TOKEN;
-    delete env.OPENAI_BASE_URL;
-  } else {
-    if (apiKey) {
-      env.OPENAI_API_KEY = apiKey;
-      env.CODEX_API_KEY = apiKey;
-      env.CODEX_AUTH_TOKEN = apiKey;
-    }
-    if (baseUrl) {
-      env.OPENAI_BASE_URL = baseUrl;
-    }
-  }
-  if (codexExtraEnv) {
-    try {
-      const parsed = JSON.parse(codexExtraEnv) as Record<string, string>;
-      for (const [key, value] of Object.entries(parsed)) {
-        if (value) {
-          env[key] = value;
-        }
-      }
-    } catch {
-      // ignore invalid extra env payloads
-    }
-  }
-
-  return {
-    env,
-    apiKey: authMode === 'api_key' ? apiKey : undefined,
-    baseUrl: authMode === 'api_key' ? baseUrl : undefined,
-  };
 }
 
 function isInvalidStreamState(error: unknown): boolean {
@@ -947,7 +898,7 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
           resumeSessionId?: string;
           binary: string;
           cwd: string;
-          settings: CodexClientSettings;
+          settings: CodexRuntimeSettings;
           skipPermissions: boolean;
           resolvedModel?: string;
           statusModel?: string;
@@ -1505,7 +1456,7 @@ export function streamCodex(options: CodexStreamOptions): ReadableStream<string>
           .filter((file) => isCodexCliSupportedImageAttachment(file))
           .map((file) => file.filePath as string);
         const skippedUnsupportedImages = codexImageFiles.length - imagePaths.length;
-        const settings = await buildCodexClientSettings();
+        const settings = await buildCodexRuntimeSettings();
         const skipPermissions = isDangerouslySkipPermissionsEnabled(getSetting('dangerously_skip_permissions'));
 
         const cliVersion = await getCodexVersion(binary);

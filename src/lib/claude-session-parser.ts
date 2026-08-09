@@ -381,7 +381,7 @@ function extractSessionInfo(
     cwd: effectivePath,
     gitBranch: gitBranch || '',
     version: version || '',
-    model: model || 'claude-3-5-sonnet-20241022', // fallback default
+    model,
     preview: summarizeSessionPreview(previewSource).preview.slice(0, 120),
     previewTags,
     userMessageCount,
@@ -507,7 +507,7 @@ export function parseClaudeSession(sessionId: string): ParsedSession | null {
     cwd: effectivePath,
     gitBranch: gitBranch || '',
     version: version || '',
-    model: model || 'claude-3-5-sonnet-20241022',
+    model,
     preview: summarizeSessionPreview(previewSource).preview.slice(0, 120),
     previewTags,
     userMessageCount,

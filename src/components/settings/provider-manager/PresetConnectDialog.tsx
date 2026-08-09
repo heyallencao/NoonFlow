@@ -247,40 +247,6 @@ export function PresetConnectDialog({
                 />
               </div>
 
-              {/* Suggested models */}
-              {preset.suggested_models && preset.suggested_models.length > 0 && (
-                <div className="space-y-1.5">
-                  <p className="text-[11px] text-muted-foreground">
-                    {isZh ? '推荐模型（点击快速添加）' : 'Suggested models (click to add)'}
-                  </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {preset.suggested_models.map((model) => {
-                      const isAdded = modelNames.includes(model.value);
-                      return (
-                        <button
-                          key={model.value}
-                          type="button"
-                          onClick={() => {
-                            if (!isAdded) {
-                              setModelNames((prev) => [...prev, model.value]);
-                            }
-                          }}
-                          disabled={isAdded}
-                          className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] transition-all border ${
-                            isAdded
-                              ? 'bg-muted/30 text-muted-foreground/50 border-border/40 cursor-not-allowed'
-                              : 'bg-primary/5 text-primary hover:bg-primary/10 border-primary/20 hover:border-primary/40'
-                          }`}
-                        >
-                          {isAdded && <span className="mr-1 opacity-60">✓</span>}
-                          {model.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
               <p className="text-[11px] text-muted-foreground">
                 {isZh
                   ? '可选。添加后将覆盖默认模型列表，留空则使用默认模型。'

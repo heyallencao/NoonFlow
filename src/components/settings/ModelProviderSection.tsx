@@ -489,12 +489,6 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
     return () => window.clearTimeout(timer);
   }, [runtimeFeedback.state]);
 
-  useEffect(() => {
-    if (!piDefaultModel && piModelsQuery.data?.default_model) {
-      setPiDefaultModel(piModelsQuery.data.default_model);
-    }
-  }, [piDefaultModel, piModelsQuery.data?.default_model]);
-
   const sortedProviders = useMemo(
     () => [...providers].sort((a, b) => a.sort_order - b.sort_order || a.created_at.localeCompare(b.created_at)),
     [providers],
@@ -517,6 +511,7 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
     }
     return Array.from(map.values());
   }, [providerModelsQuery.data?.groups]);
+  const codexSuggestedModels = providerModelsQuery.data?.codex?.models || [];
 
   const envKeyEntries = Object.entries(envDetected);
   const claudeStatus = runtimesQuery.data?.runtimes.find((r) => r.id === "claude_code");
@@ -972,7 +967,7 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
                 <Input
                   value={defaultModel}
                   onChange={(e) => setDefaultModel(e.target.value)}
-                  placeholder="sonnet"
+                  placeholder={isZh ? "留空则跟随 Claude Code CLI" : "Leave empty to follow Claude Code CLI"}
                   className="h-8 text-xs"
                 />
               </div>
@@ -1154,9 +1149,34 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
                 <Input
                   value={codexDefaultModel}
                   onChange={(e) => setCodexDefaultModel(e.target.value)}
-                  placeholder="gpt-5-codex"
+                  placeholder={isZh ? "留空则跟随 Codex CLI" : "Leave empty to follow Codex CLI"}
                   className="h-8 text-xs"
                 />
+                {codexSuggestedModels.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {codexSuggestedModels.map((model) => (
+                      <button
+                        key={`codex-setting-${model.value}`}
+                        type="button"
+                        onClick={() => setCodexDefaultModel(model.value)}
+                        className={cn(
+                          "rounded-full border px-2 py-0.5 text-[11px] transition-colors",
+                          codexDefaultModel === model.value
+                            ? "border-primary/30 bg-primary/10 text-primary"
+                            : "border-border-subtle bg-background text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        {model.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {providerModelsQuery.data?.codex?.error && (
+                  <p className="text-[11px] text-warning">
+                    {isZh ? "Codex CLI 模型读取失败：" : "Could not read Codex CLI models: "}
+                    {providerModelsQuery.data.codex.error}
+                  </p>
+                )}
               </div>
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-muted-foreground">
@@ -1187,8 +1207,8 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {isZh
-                    ? "使用 Pi 原生 RPC、模型目录和会话文件；NoonFlow 可保存 provider/model 默认值。"
-                    : "Uses Pi's native RPC, model catalog, and session files; NoonFlow can save a provider/model default."}
+                    ? "使用 Pi 原生 RPC、模型目录和会话文件；默认持续跟随 Pi，仅在你主动选择时保存覆盖值。"
+                    : "Uses Pi's native RPC, model catalog, and session files; follows Pi by default and saves an override only when you choose one."}
                 </p>
               </div>
               <Switch checked={piEnabled} onCheckedChange={setPiEnabled} />
@@ -1247,6 +1267,12 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
                   </option>
                 ))}
               </select>
+              {!piDefaultModel && piModelsQuery.data?.default_model && (
+                <p className="text-[11px] text-muted-foreground">
+                  {isZh ? "当前 Pi 原生默认：" : "Current Pi native default: "}
+                  <code className="text-foreground">{piModelsQuery.data.default_model}</code>
+                </p>
+              )}
               {piModelsQuery.data?.error && (
                 <p className="text-[11px] text-amber-600 dark:text-amber-400">{piModelsQuery.data.error}</p>
               )}

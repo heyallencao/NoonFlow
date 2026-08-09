@@ -68,8 +68,6 @@ export interface QuickPreset {
   extra_env: string;
   fields: ('name' | 'api_key' | 'base_url' | 'extra_env' | 'model_names')[];
   category?: 'chat' | 'media';
-  /** Recommended models for this provider */
-  suggested_models?: Array<{ value: string; label: string }>;
 }
 
 export const QUICK_PRESETS: QuickPreset[] = [
@@ -105,12 +103,6 @@ export const QUICK_PRESETS: QuickPreset[] = [
     base_url: 'https://api.anthropic.com',
     extra_env: '{}',
     fields: ['api_key'],
-    suggested_models: [
-      { value: 'claude-opus-4-6', label: 'Claude 4.6 Opus (1M)' },
-      { value: 'claude-sonnet-4-6', label: 'Claude 4.6 Sonnet (200K)' },
-      { value: 'claude-opus-4-5', label: 'Claude 4.5 Opus (200K)' },
-      { value: 'claude-sonnet-4-5', label: 'Claude 4.5 Sonnet (200K)' },
-    ],
   },
   {
     key: 'openrouter',
@@ -122,15 +114,6 @@ export const QUICK_PRESETS: QuickPreset[] = [
     base_url: 'https://openrouter.ai/api',
     extra_env: '{"ANTHROPIC_API_KEY":""}',
     fields: ['api_key'],
-    suggested_models: [
-      { value: 'anthropic/claude-opus-4-6', label: 'Claude 4.6 Opus (1M)' },
-      { value: 'anthropic/claude-sonnet-4-6', label: 'Claude 4.6 Sonnet (200K)' },
-      { value: 'openai/gpt-5.5', label: 'GPT-5.5 (1.05M)' },
-      { value: 'openai/gpt-5.3-codex', label: 'GPT-5.3 Codex (400K)' },
-      { value: 'google/gemini-3.1-pro', label: 'Gemini 3.1 Pro (2M+)' },
-      { value: 'deepseek/deepseek-r1', label: 'DeepSeek R1 (164K)' },
-      { value: 'alibaba/qwen-3.5-max', label: 'Qwen 3.5-Max (1M)' },
-    ],
   },
   {
     key: 'glm-cn',
@@ -142,12 +125,6 @@ export const QUICK_PRESETS: QuickPreset[] = [
     base_url: 'https://open.bigmodel.cn/api/anthropic',
     extra_env: '{"API_TIMEOUT_MS":"3000000","ANTHROPIC_API_KEY":""}',
     fields: ['api_key'],
-    suggested_models: [
-      { value: 'glm-5', label: 'GLM-5 (200K)' },
-      { value: 'glm-5-reasoning', label: 'GLM-5 Reasoning (200K)' },
-      { value: 'glm-4-long', label: 'GLM-4 Long (2M)' },
-      { value: 'glm-4.5', label: 'GLM-4.5 (200K)' },
-    ],
   },
   {
     key: 'glm-global',
@@ -159,12 +136,6 @@ export const QUICK_PRESETS: QuickPreset[] = [
     base_url: 'https://api.z.ai/api/anthropic',
     extra_env: '{"API_TIMEOUT_MS":"3000000","ANTHROPIC_API_KEY":""}',
     fields: ['api_key'],
-    suggested_models: [
-      { value: 'glm-5', label: 'GLM-5 (200K)' },
-      { value: 'glm-5-reasoning', label: 'GLM-5 Reasoning (200K)' },
-      { value: 'glm-4-long', label: 'GLM-4 Long (2M)' },
-      { value: 'glm-4.5', label: 'GLM-4.5 (200K)' },
-    ],
   },
   {
     key: 'kimi',
@@ -176,11 +147,6 @@ export const QUICK_PRESETS: QuickPreset[] = [
     base_url: 'https://api.kimi.com/coding/',
     extra_env: '{"ANTHROPIC_AUTH_TOKEN":""}',
     fields: ['api_key'],
-    suggested_models: [
-      { value: 'kimi-k2.5', label: 'Kimi K2.5 (2M)' },
-      { value: 'kimi-k2', label: 'Kimi K2 (2M)' },
-      { value: 'kimi-k1.6', label: 'Kimi K1.6 (256K)' },
-    ],
   },
   {
     key: 'moonshot',
@@ -192,11 +158,6 @@ export const QUICK_PRESETS: QuickPreset[] = [
     base_url: 'https://api.moonshot.cn/anthropic',
     extra_env: '{"ANTHROPIC_API_KEY":""}',
     fields: ['api_key'],
-    suggested_models: [
-      { value: 'kimi-k2.5', label: 'Kimi K2.5 (2M)' },
-      { value: 'kimi-k2', label: 'Kimi K2 (2M)' },
-      { value: 'kimi-k1.6', label: 'Kimi K1.6 (256K)' },
-    ],
   },
   {
     key: 'minimax-cn',
@@ -208,11 +169,6 @@ export const QUICK_PRESETS: QuickPreset[] = [
     base_url: 'https://api.minimaxi.com/anthropic',
     extra_env: '{"API_TIMEOUT_MS":"3000000","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1","ANTHROPIC_API_KEY":""}',
     fields: ['api_key'],
-    suggested_models: [
-      { value: 'minimax-m1', label: 'MiniMax M1 (1M)' },
-      { value: 'minimax-m2.7', label: 'MiniMax M2.7 (200K)' },
-      { value: 'minimax-text-01', label: 'MiniMax Text-01 (1M)' },
-    ],
   },
   {
     key: 'minimax-global',
@@ -224,11 +180,6 @@ export const QUICK_PRESETS: QuickPreset[] = [
     base_url: 'https://api.minimax.io/anthropic',
     extra_env: '{"API_TIMEOUT_MS":"3000000","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1","ANTHROPIC_API_KEY":""}',
     fields: ['api_key'],
-    suggested_models: [
-      { value: 'minimax-m1', label: 'MiniMax M1 (1M)' },
-      { value: 'minimax-m2.7', label: 'MiniMax M2.7 (200K)' },
-      { value: 'minimax-text-01', label: 'MiniMax Text-01 (1M)' },
-    ],
   },
   {
     key: 'volcengine',
@@ -240,14 +191,6 @@ export const QUICK_PRESETS: QuickPreset[] = [
     base_url: 'https://ark.cn-beijing.volces.com/api/coding',
     extra_env: '{"ANTHROPIC_AUTH_TOKEN":""}',
     fields: ['api_key', 'model_names'],
-    suggested_models: [
-      { value: 'doubao-pro', label: 'Doubao Pro' },
-      { value: 'doubao-lite', label: 'Doubao Lite' },
-      { value: 'deepseek-r1', label: 'DeepSeek R1 (164K)' },
-      { value: 'deepseek-v3', label: 'DeepSeek V3 (128K)' },
-      { value: 'glm-5', label: 'GLM-5 (200K)' },
-      { value: 'kimi-k2.5', label: 'Kimi K2.5 (2M)' },
-    ],
   },
   {
     key: 'bailian',
@@ -259,15 +202,6 @@ export const QUICK_PRESETS: QuickPreset[] = [
     base_url: 'https://coding.dashscope.aliyuncs.com/apps/anthropic',
     extra_env: '{"ANTHROPIC_API_KEY":""}',
     fields: ['api_key'],
-    suggested_models: [
-      { value: 'qwen-3.5-max', label: 'Qwen 3.5-Max (1M)' },
-      { value: 'qwen-3.5-plus', label: 'Qwen 3.5-Plus (1M)' },
-      { value: 'qwen-3.5-coder', label: 'Qwen 3.5-Coder (1M)' },
-      { value: 'qwen2.5', label: 'Qwen 2.5 (1M)' },
-      { value: 'deepseek-r1', label: 'DeepSeek R1 (164K)' },
-      { value: 'glm-5', label: 'GLM-5 (200K)' },
-      { value: 'kimi-k2.5', label: 'Kimi K2.5 (2M)' },
-    ],
   },
   {
     key: 'bedrock',
@@ -279,12 +213,6 @@ export const QUICK_PRESETS: QuickPreset[] = [
     base_url: '',
     extra_env: '{"CLAUDE_CODE_USE_BEDROCK":"1","AWS_REGION":"us-east-1","CLAUDE_CODE_SKIP_BEDROCK_AUTH":"1"}',
     fields: ['extra_env'],
-    suggested_models: [
-      { value: 'us.anthropic.claude-opus-4-6', label: 'Claude 4.6 Opus (1M)' },
-      { value: 'us.anthropic.claude-sonnet-4-6', label: 'Claude 4.6 Sonnet (200K)' },
-      { value: 'us.anthropic.claude-opus-4-5', label: 'Claude 4.5 Opus (200K)' },
-      { value: 'us.anthropic.claude-sonnet-4-5', label: 'Claude 4.5 Sonnet (200K)' },
-    ],
   },
   {
     key: 'deepseek',
@@ -296,10 +224,6 @@ export const QUICK_PRESETS: QuickPreset[] = [
     base_url: 'https://api.deepseek.com/v1',
     extra_env: '{}',
     fields: ['api_key', 'model_names'],
-    suggested_models: [
-      { value: 'deepseek-chat', label: 'DeepSeek Chat' },
-      { value: 'deepseek-reasoner', label: 'DeepSeek Reasoner' },
-    ],
   },
   {
     key: 'siliconflow',
@@ -311,11 +235,6 @@ export const QUICK_PRESETS: QuickPreset[] = [
     base_url: 'https://api.siliconflow.cn/v1',
     extra_env: '{}',
     fields: ['api_key', 'model_names'],
-    suggested_models: [
-      { value: 'deepseek-ai/DeepSeek-R1', label: 'DeepSeek R1' },
-      { value: 'deepseek-ai/DeepSeek-V3', label: 'DeepSeek V3' },
-      { value: 'Qwen/Qwen2.5-Coder-32B-Instruct', label: 'Qwen 2.5 Coder 32B' },
-    ],
   },
   {
     key: 'stepfun',
@@ -327,10 +246,6 @@ export const QUICK_PRESETS: QuickPreset[] = [
     base_url: 'https://api.stepfun.com/v1',
     extra_env: '{}',
     fields: ['api_key', 'model_names'],
-    suggested_models: [
-      { value: 'step-2-16k', label: 'Step 2 16K' },
-      { value: 'step-1v-8k', label: 'Step 1V 8K' },
-    ],
   },
   {
     key: 'qianfan',
@@ -342,11 +257,6 @@ export const QUICK_PRESETS: QuickPreset[] = [
     base_url: 'https://qianfan.baidubce.com/v2',
     extra_env: '{}',
     fields: ['api_key', 'model_names'],
-    suggested_models: [
-      { value: 'ernie-4.0-turbo-8k', label: 'ERNIE 4.0 Turbo 8K' },
-      { value: 'deepseek-v3', label: 'DeepSeek V3' },
-      { value: 'deepseek-r1', label: 'DeepSeek R1' },
-    ],
   },
   {
     key: 'vertex',

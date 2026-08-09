@@ -351,6 +351,27 @@ describe('streamCodex app-server', () => {
     }
   });
 
+  it('passes a future CLI reasoning effort through the explicit model selection encoding', async () => {
+    await prepareFake();
+    const db = await import('../../lib/db');
+    db.setSetting(SETTING_KEYS.CHAT_REASONING_ENABLED, 'true');
+    try {
+      const { streamCodex } = await importFreshCodexClient();
+      await readStream(streamCodex({
+        prompt: 'effort',
+        sessionId: 'future-effort',
+        model: 'future-model::effort=balanced-next',
+      }));
+      const turn = readFakeCodexRequests(fakeCli.capturePath).find((entry) => entry.method === 'turn/start') as {
+        params?: Record<string, unknown>;
+      };
+      assert.equal(turn.params?.model, 'future-model');
+      assert.equal(turn.params?.effort, 'balanced-next');
+    } finally {
+      db.setSetting(SETTING_KEYS.CHAT_REASONING_ENABLED, 'false');
+    }
+  });
+
   it('keeps the status model suffix but omits native effort when reasoning is disabled', async () => {
     await prepareFake();
     const db = await import('../../lib/db');

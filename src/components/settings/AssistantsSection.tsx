@@ -223,7 +223,7 @@ export function AssistantsSection() {
               <Input
                 value={codexDefaultModel}
                 onChange={(event) => setCodexDefaultModel(event.target.value)}
-                placeholder="gpt-4o-mini"
+                placeholder="Follow Codex CLI when empty"
                 className="font-mono text-sm max-w-md h-10"
               />
             </div>

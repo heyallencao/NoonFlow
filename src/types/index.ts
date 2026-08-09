@@ -158,11 +158,22 @@ export interface ApiProvider {
   updated_at: string;
 }
 
+export interface AssistantModelOption {
+  value: string;
+  label: string;
+  description?: string;
+  isDefault?: boolean;
+  supportedEffortLevels?: string[];
+  defaultEffort?: string;
+}
+
 export interface ProviderModelGroup {
   provider_id: string;       // provider DB id, or 'env' for environment variables
   provider_name: string;
   provider_type: string;
-  models: Array<{ value: string; label: string }>;
+  models: AssistantModelOption[];
+  default_model?: string;
+  error?: string;
 }
 
 export interface PiModelOption {

@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import type { ApiProvider, PiModelOption, ProviderModelGroup } from '@/types';
+import type { ApiProvider, AssistantModelOption, PiModelOption, ProviderModelGroup } from '@/types';
 import { fetchJson } from './fetch-json';
 import { queryKeys } from './query-keys';
 
@@ -12,6 +12,11 @@ interface ProvidersResponse {
 interface ProviderModelsResponse {
   groups: ProviderModelGroup[];
   default_provider_id: string;
+  codex: {
+    models: AssistantModelOption[];
+    default_model: string;
+    error?: string;
+  };
 }
 
 interface PiModelsResponse {
@@ -34,6 +39,7 @@ export function useProviderModelsQuery() {
   return useQuery({
     queryKey: queryKeys.providerModels(),
     queryFn: () => fetchJson<ProviderModelsResponse>('/api/providers/models'),
+    staleTime: 30_000,
   });
 }
 

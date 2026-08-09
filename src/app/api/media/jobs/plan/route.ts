@@ -68,7 +68,13 @@ export async function POST(request: NextRequest) {
     }
     if (!modelId) {
       const defaultModel = db.prepare("SELECT value FROM settings WHERE key = 'default_model'").get() as { value: string } | undefined;
-      modelId = defaultModel?.value || 'claude-sonnet-4-20250514';
+      modelId = defaultModel?.value || '';
+    }
+    if (!modelId) {
+      return Response.json(
+        { error: 'No planner model selected. Choose a model returned by the connected CLI/provider first.' },
+        { status: 400 },
+      );
     }
 
     // Read document content

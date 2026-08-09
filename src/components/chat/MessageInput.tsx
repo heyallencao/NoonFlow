@@ -17,7 +17,6 @@ import {
 import { subscribeProviderChanged } from '@/lib/events/app-event-bus';
 import { usePiModelsQuery, useProviderModelsQuery } from '@/lib/queries/provider-queries';
 import type { CommandBadge } from './message-input/constants';
-import { DEFAULT_MODEL_OPTIONS } from './message-input/constants';
 import {
   AttachFileButton,
   FileAttachmentsCapsules,
@@ -83,7 +82,7 @@ export function MessageInput({
     setInputValue,
     historyIndex,
     clearHistoryNavigationState,
-    modelName,
+    modelName: assistantRuntime === 'claude_code' ? modelName : undefined,
     onCommand,
     setBadge,
     textareaRef,
@@ -145,29 +144,34 @@ export function MessageInput({
     textareaRef,
   });
 
-  const providerGroups: ProviderModelGroup[] =
-    providerModelsQuery.data?.groups && providerModelsQuery.data.groups.length > 0
-      ? providerModelsQuery.data.groups
-      : [{
-          provider_id: 'env',
-          provider_name: 'Anthropic',
-          provider_type: 'anthropic',
-          models: DEFAULT_MODEL_OPTIONS,
-        }];
+  const providerGroups: ProviderModelGroup[] = providerModelsQuery.data?.groups?.length
+    ? providerModelsQuery.data.groups
+    : [{
+        provider_id: 'env',
+        provider_name: 'Claude Code',
+        provider_type: 'anthropic',
+        models: [],
+        error: providerModelsQuery.error instanceof Error ? providerModelsQuery.error.message : undefined,
+      }];
 
   const defaultProviderId = providerModelsQuery.data?.default_provider_id || '';
   const currentProviderIdValue = providerId || defaultProviderId || (providerGroups[0]?.provider_id ?? '');
   const currentGroup = providerGroups.find((group) => group.provider_id === currentProviderIdValue) || providerGroups[0];
-  const modelOptions = currentGroup?.models || DEFAULT_MODEL_OPTIONS;
-  const fallbackClaudeModel = modelOptions[0]?.value || DEFAULT_MODEL_OPTIONS[0].value;
+  const modelOptions = currentGroup?.models || [];
+  const fallbackClaudeModel = currentGroup?.default_model || modelOptions[0]?.value || '';
+  const codexModels = providerModelsQuery.data?.codex?.models || [];
+  const fallbackCodexModel = providerModelsQuery.data?.codex?.default_model || '';
 
   const isClaudeRuntime = assistantRuntime === 'claude_code';
   const currentModelValue = modelName || (isClaudeRuntime
     ? fallbackClaudeModel
     : assistantRuntime === 'pi'
       ? piModelsQuery.data?.default_model || piModelsQuery.data?.models[0]?.value || ''
-      : 'codex');
-  const currentModelOption = modelOptions.find((model) => model.value === currentModelValue) || modelOptions[0];
+      : fallbackCodexModel);
+  const currentModelOption = modelOptions.find((model) => model.value === currentModelValue)
+    || (currentModelValue ? { value: currentModelValue, label: currentModelValue } : undefined)
+    || modelOptions[0]
+    || { value: '', label: 'CLI default' };
   const piModelSelection = splitPiModelSelection(currentModelValue);
   const selectedPiModel = piModelsQuery.data?.models.find((model) => (
     (model.value || `${model.provider}/${model.id}`) === piModelSelection.model
@@ -318,6 +322,8 @@ export function MessageInput({
                   currentProviderIdValue={currentProviderIdValue}
                   currentModelLabel={currentModelOption.label}
                   providerGroups={providerGroups}
+                  codexModels={codexModels}
+                  codexModelsError={providerModelsQuery.data?.codex?.error}
                   piModels={piModelsQuery.data?.models || []}
                   piModelsError={piModelsQuery.data?.error}
                   onModelChange={onModelChange}
@@ -327,6 +333,7 @@ export function MessageInput({
                 {assistantRuntime === 'codex' && (
                   <CodexEffortSelector
                     modelName={modelName}
+                    codexModels={codexModels}
                     onModelChange={onModelChange}
                   />
                 )}

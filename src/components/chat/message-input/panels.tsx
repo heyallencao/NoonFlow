@@ -19,7 +19,7 @@ import {
   splitPiModelSelection,
   type PiThinkingLevel,
 } from '@/lib/pi-model-selection';
-import type { AssistantRuntime, PiModelOption, ProviderModelGroup } from '@/types';
+import type { AssistantModelOption, AssistantRuntime, PiModelOption, ProviderModelGroup } from '@/types';
 import type { TranslationKey } from '@/i18n';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card';
 import {
@@ -31,46 +31,47 @@ import {
   type PopoverMode,
 } from './constants';
 
-type CodexEffortLevel = 'xhigh' | 'high' | 'middle' | 'low';
+const CODEX_EFFORT_SEPARATOR = '::effort=';
 
-const CODEX_BASE_MODEL_OPTIONS = [
-  { value: 'gpt-5.5', label: 'GPT-5.5 (default)' },
-  { value: 'gpt-5.4', label: 'GPT-5.4' },
-  { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
-  { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
-];
+function formatEffortLabel(effort: string): string {
+  return effort === 'xhigh'
+    ? 'XHigh'
+    : effort.charAt(0).toUpperCase() + effort.slice(1);
+}
 
-const CODEX_EFFORT_OPTIONS: Array<{ value: CodexEffortLevel; label: string }> = [
-  { value: 'xhigh', label: 'XHigh' },
-  { value: 'high', label: 'High' },
-  { value: 'middle', label: 'Middle' },
-  { value: 'low', label: 'Low' },
-];
-
-function splitCodexModel(modelName?: string): { baseModel: string; effort: CodexEffortLevel } {
-  const fallbackBaseModel = 'gpt-5.5';
-  const normalizedModel = (modelName || fallbackBaseModel).trim() || fallbackBaseModel;
+function splitCodexModel(modelName?: string, fallbackBaseModel = ''): { baseModel: string; effort?: string } {
+  const normalizedModel = (modelName || fallbackBaseModel).trim();
+  if (!normalizedModel) return { baseModel: '' };
   const normalizedLower = normalizedModel.toLowerCase();
   if (normalizedLower === 'codex') {
-    return { baseModel: fallbackBaseModel, effort: 'middle' };
+    return { baseModel: fallbackBaseModel };
   }
-  const suffixMatch = normalizedModel.match(/^(.*?)-(xhigh|high|medium|middle|low)$/i);
+  const separatorIndex = normalizedModel.lastIndexOf(CODEX_EFFORT_SEPARATOR);
+  if (separatorIndex > 0) {
+    const encodedEffort = normalizedModel.slice(separatorIndex + CODEX_EFFORT_SEPARATOR.length);
+    try {
+      const effort = decodeURIComponent(encodedEffort).trim();
+      if (effort) return { baseModel: normalizedModel.slice(0, separatorIndex), effort };
+    } catch {
+      // Fall through to the legacy suffix parser.
+    }
+  }
+  const suffixMatch = normalizedModel.match(/^(.*?)-(ultra|max|xhigh|high|medium|middle|low)$/i);
   if (suffixMatch && suffixMatch[1]) {
     const normalizedEffort = suffixMatch[2].toLowerCase();
     return {
       baseModel: suffixMatch[1],
-      effort: normalizedEffort === 'medium' ? 'middle' : normalizedEffort as CodexEffortLevel,
+      effort: normalizedEffort === 'middle' ? 'medium' : normalizedEffort,
     };
   }
-  return { baseModel: normalizedModel, effort: 'middle' };
+  return { baseModel: normalizedModel };
 }
 
-function composeCodexModel(baseModel: string, effort: CodexEffortLevel): string {
-  const normalizedBaseModel = baseModel.trim().replace(/-(xhigh|high|medium|middle|low)$/i, '');
-  if (effort === 'middle') {
-    return normalizedBaseModel;
-  }
-  return `${normalizedBaseModel}-${effort}`;
+function composeCodexModel(baseModel: string, effort?: string): string {
+  const normalizedBaseModel = splitCodexModel(baseModel).baseModel;
+  return effort
+    ? `${normalizedBaseModel}${CODEX_EFFORT_SEPARATOR}${encodeURIComponent(effort)}`
+    : normalizedBaseModel;
 }
 
 interface MessageInputPopoverPanelProps {
@@ -426,6 +427,8 @@ interface ModelSelectorProps {
   currentProviderIdValue: string;
   currentModelLabel: string;
   providerGroups: ProviderModelGroup[];
+  codexModels: AssistantModelOption[];
+  codexModelsError?: string;
   piModels: PiModelOption[];
   piModelsError?: string;
   onModelChange?: (model: string) => void;
@@ -440,6 +443,8 @@ export function ModelSelector({
   currentProviderIdValue,
   currentModelLabel,
   providerGroups,
+  codexModels,
+  codexModelsError,
   piModels,
   piModelsError,
   onModelChange,
@@ -447,7 +452,8 @@ export function ModelSelector({
 }: ModelSelectorProps) {
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
-  const codexModel = splitCodexModel(modelName);
+  const defaultCodexModel = codexModels.find((model) => model.isDefault)?.value || codexModels[0]?.value || '';
+  const codexModel = splitCodexModel(modelName, defaultCodexModel);
   const piModel = splitPiModelSelection(currentModelValue);
 
   useEffect(() => {
@@ -528,9 +534,10 @@ export function ModelSelector({
   }
 
   if (!isClaudeRuntime) {
-    const codexOptions = CODEX_BASE_MODEL_OPTIONS.some((option) => option.value === codexModel.baseModel)
-      ? CODEX_BASE_MODEL_OPTIONS
-      : [...CODEX_BASE_MODEL_OPTIONS, { value: codexModel.baseModel, label: codexModel.baseModel }];
+    const codexOptions = codexModel.baseModel && !codexModels.some((option) => option.value === codexModel.baseModel)
+      ? [...codexModels, { value: codexModel.baseModel, label: codexModel.baseModel }]
+      : codexModels;
+    const selectedOption = codexOptions.find((option) => option.value === codexModel.baseModel);
 
     return (
       <div className="relative" ref={modelMenuRef}>
@@ -541,7 +548,9 @@ export function ModelSelector({
           )}
           onClick={() => setModelMenuOpen((prev) => !prev)}
         >
-          <span className="text-xs font-medium">{codexModel.baseModel}</span>
+          <span className="max-w-44 truncate text-xs font-medium">
+            {selectedOption?.label || codexModel.baseModel || 'Codex CLI default'}
+          </span>
           <HugeiconsIcon icon={ArrowDown01Icon} className={cn('h-2.5 w-2.5 transition-transform duration-200', modelMenuOpen && 'rotate-180')} />
         </PromptInputButton>
 
@@ -550,6 +559,11 @@ export function ModelSelector({
             <div className="border-b border-border/65 px-3 py-1.5 text-[10px] font-medium text-muted-foreground">
               Codex Models
             </div>
+            {codexOptions.length === 0 ? (
+              <div className="px-3 py-2 text-xs text-muted-foreground">
+                {codexModelsError || 'No models returned by Codex CLI. Native default will be used.'}
+              </div>
+            ) : (
             <div className="py-0.5">
               {codexOptions.map((option) => {
                 const isActive = option.value === codexModel.baseModel;
@@ -561,17 +575,27 @@ export function ModelSelector({
                       isActive ? 'border-primary/25 bg-accent/62 text-foreground' : 'text-foreground/84 hover:bg-accent/45 hover:text-foreground'
                     )}
                     onClick={() => {
-                      const nextModel = composeCodexModel(option.value, codexModel.effort);
+                      const supportedEfforts = option.supportedEffortLevels || [];
+                      const nextEffort = codexModel.effort && supportedEfforts.includes(codexModel.effort)
+                        ? codexModel.effort
+                        : undefined;
+                      const nextModel = composeCodexModel(option.value, nextEffort);
                       onModelChange?.(nextModel);
                       setModelMenuOpen(false);
                     }}
                   >
-                    <span className="text-xs font-medium">{option.label}</span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-xs font-medium">{option.label}</span>
+                      {option.description && (
+                        <span className="block truncate text-[10px] text-muted-foreground">{option.description}</span>
+                      )}
+                    </span>
                     {isActive && <span className="text-xs">✓</span>}
                   </button>
                 );
               })}
             </div>
+            )}
           </div>
         )}
       </div>
@@ -602,6 +626,11 @@ export function ModelSelector({
                 {group.provider_name}
               </div>
               <div className="py-0.5">
+                {group.models.length === 0 && (
+                  <div className="px-3 py-2 text-xs text-muted-foreground">
+                    {group.error || 'No models returned by Claude Code CLI. Native default will be used.'}
+                  </div>
+                )}
                 {group.models.map((opt) => {
                   const isActive = opt.value === currentModelValue && group.provider_id === currentProviderIdValue;
                   return (
@@ -629,13 +658,17 @@ export function ModelSelector({
 
 interface CodexEffortSelectorProps {
   modelName?: string;
+  codexModels: AssistantModelOption[];
   onModelChange?: (model: string) => void;
 }
 
-export function CodexEffortSelector({ modelName, onModelChange }: CodexEffortSelectorProps) {
+export function CodexEffortSelector({ modelName, codexModels, onModelChange }: CodexEffortSelectorProps) {
   const effortMenuRef = useRef<HTMLDivElement>(null);
   const [effortMenuOpen, setEffortMenuOpen] = useState(false);
-  const codexModel = splitCodexModel(modelName);
+  const defaultModel = codexModels.find((model) => model.isDefault)?.value || codexModels[0]?.value || '';
+  const codexModel = splitCodexModel(modelName, defaultModel);
+  const selectedModel = codexModels.find((model) => model.value === codexModel.baseModel);
+  const effortOptions = selectedModel?.supportedEffortLevels || [];
 
   useEffect(() => {
     if (!effortMenuOpen) return;
@@ -648,7 +681,9 @@ export function CodexEffortSelector({ modelName, onModelChange }: CodexEffortSel
     return () => document.removeEventListener('mousedown', handler);
   }, [effortMenuOpen]);
 
-  const currentEffortLabel = CODEX_EFFORT_OPTIONS.find((item) => item.value === codexModel.effort)?.label || 'Middle';
+  if (!selectedModel || effortOptions.length === 0) return null;
+  const effectiveEffort = codexModel.effort || selectedModel.defaultEffort || effortOptions[0];
+  const currentEffortLabel = effectiveEffort ? formatEffortLabel(effectiveEffort) : 'CLI default';
 
   return (
     <div className="relative" ref={effortMenuRef}>
@@ -669,21 +704,21 @@ export function CodexEffortSelector({ modelName, onModelChange }: CodexEffortSel
             Effort
           </div>
           <div className="py-0.5">
-            {CODEX_EFFORT_OPTIONS.map((option) => {
-              const isActive = option.value === codexModel.effort;
+            {effortOptions.map((effort) => {
+              const isActive = effort === effectiveEffort;
               return (
                 <button
-                  key={`effort-${option.value}`}
+                  key={`effort-${effort}`}
                   className={cn(
                     'flex w-full items-center justify-between gap-2 rounded-md border border-transparent px-3 py-1.5 text-left text-sm transition-colors',
                     isActive ? 'border-primary/25 bg-accent/62 text-foreground' : 'text-foreground/84 hover:bg-accent/45 hover:text-foreground'
                   )}
                   onClick={() => {
-                    onModelChange?.(composeCodexModel(codexModel.baseModel, option.value));
+                    onModelChange?.(composeCodexModel(codexModel.baseModel, effort));
                     setEffortMenuOpen(false);
                   }}
                 >
-                  <span className="text-xs">{option.label}</span>
+                  <span className="text-xs">{formatEffortLabel(effort)}</span>
                   {isActive && <span className="text-xs">✓</span>}
                 </button>
               );

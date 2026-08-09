@@ -260,7 +260,7 @@ export function usePopoverController({
           body: JSON.stringify({
             query: popoverFilter,
             skills: skillsPayload,
-            model: modelName || 'haiku',
+            ...(modelName?.trim() ? { model: modelName.trim() } : {}),
           }),
         });
 
