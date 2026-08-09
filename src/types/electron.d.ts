@@ -10,8 +10,12 @@ interface ElectronInstallAPI {
     claudeVersion?: string;
     hasCodex: boolean;
     codexVersion?: string;
+    hasPi: boolean;
+    piVersion?: string;
     claudeInitialized: boolean;
     codexInitialized: boolean;
+    piInitialized: boolean;
+    nodeSupportsPi: boolean;
     hasHomebrew?: boolean;
     platform?: string;
   }>;
@@ -19,8 +23,11 @@ interface ElectronInstallAPI {
     includeNode?: boolean;
     installClaude?: boolean;
     installCodex?: boolean;
+    installPi?: boolean;
     initializeClaude?: boolean;
     initializeCodex?: boolean;
+    initializePi?: boolean;
+    upgradeExisting?: boolean;
   }) => Promise<void>;
   cancel: () => Promise<void>;
   getLogs: () => Promise<string[]>;

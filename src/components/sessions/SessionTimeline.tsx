@@ -15,7 +15,7 @@ import { getRuntimeBadgeClassName, getRuntimeLabel } from '@/lib/runtime-display
 
 interface SessionInfo {
   id: string;
-  runtime: 'claude_code' | 'codex';
+  runtime: 'claude_code' | 'codex' | 'pi';
   title: string;
   projectPath: string;
   projectName: string;
@@ -44,7 +44,7 @@ function sanitizeReturnToPath(value?: string | null): string | null {
 
 async function fetchSessionDetail(id: string, runtime?: string | null): Promise<SessionDetail> {
   const searchParams = new URLSearchParams();
-  if (runtime === 'claude_code' || runtime === 'codex') {
+  if (runtime === 'claude_code' || runtime === 'codex' || runtime === 'pi') {
     searchParams.set('runtime', runtime);
   }
   const query = searchParams.toString();

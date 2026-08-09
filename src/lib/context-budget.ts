@@ -78,11 +78,11 @@ interface ComputeBreakdownParams {
   files?: FileAttachment[];
   useConversationHistory: boolean;
   includeSystemPrompt: boolean;
-  runtime: 'claude' | 'codex';
+  runtime: 'claude' | 'codex' | 'pi';
 }
 
 interface PrepareConversationContextParams {
-  runtime: 'claude' | 'codex';
+  runtime: 'claude' | 'codex' | 'pi';
   prompt: string;
   systemPrompt?: string;
   conversationHistory?: ConversationHistoryEntry[];
@@ -427,7 +427,7 @@ function buildMessageStates(
 }
 
 function getFileReferenceMetadata(
-  runtime: 'claude' | 'codex',
+  runtime: 'claude' | 'codex' | 'pi',
   files?: FileAttachment[],
 ): string {
   if (!files || files.length === 0) {

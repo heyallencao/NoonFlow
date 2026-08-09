@@ -23,8 +23,8 @@ test.describe('Focused dashboard', () => {
     await waitForPageReady(page);
 
     await expect(page).toHaveURL(/\/dashboard$/);
-    await expect(page.getByRole('heading', { name: 'Claude Code 与 Codex，本地直接使用' })).toBeVisible();
-    await expect(page.getByText('会话历史由 Claude Code 或 Codex 原生保存')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Claude Code、Codex 与 Pi，本地直接使用' })).toBeVisible();
+    await expect(page.getByText('会话历史由 Claude Code、Codex 或 Pi 原生保存')).toBeVisible();
     await expect(page.getByRole('link', { name: '检查运行环境' })).toHaveAttribute('href', '/settings');
 
     const sidebar = page.locator('aside');

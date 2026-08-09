@@ -3,7 +3,7 @@
   "version": "0.6.0",
   "private": true,
   "author": "allen.cao",
-  "description": "Desktop workspace for local Claude Code and Codex sessions",
+  "description": "Desktop workspace for local Claude Code, Codex, and Pi sessions",
   "main": "dist-electron/main.js",
   "scripts": {
     "native:ensure": "node scripts/ensure-native-modules.mjs",

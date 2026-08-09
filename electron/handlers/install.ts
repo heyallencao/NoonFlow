@@ -1,27 +1,34 @@
 import { BrowserWindow, ipcMain } from "electron";
-import { spawn, execSync } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { getProcessEnvWithShellPath, sanitizeDesktopChildEnv } from "../lib/shell-env";
+import { nodePackageManagerAction, shouldUseWindowsCommandShell } from "../lib/command-spawn";
+import { initializationStepStatus, installCompletionStatus } from "../lib/install-status";
 import type { InstallPrerequisites, InstallStartOptions, InstallState } from "../bridge.d";
 
-type RuntimeTarget = "claude" | "codex";
+type RuntimeTarget = "claude" | "codex" | "pi";
 
 const RUNTIME_INSTALL_PACKAGE: Record<RuntimeTarget, string> = {
   claude: "@anthropic-ai/claude-code",
   codex: "@openai/codex",
+  pi: "@earendil-works/pi-coding-agent",
 };
 
 const RUNTIME_BINARY: Record<RuntimeTarget, string> = {
   claude: "claude",
   codex: "codex",
+  pi: "pi",
 };
 
 const RUNTIME_LABEL: Record<RuntimeTarget, string> = {
   claude: "Claude Code",
   codex: "Codex",
+  pi: "Pi",
 };
+
+const PI_MIN_NODE_VERSION = [22, 19, 0] as const;
 
 let installState: InstallState = {
   status: "idle",
@@ -92,11 +99,44 @@ function detectCodexInitialized(): boolean {
   );
 }
 
+function nodeSupportsPi(version: string | undefined): boolean {
+  const match = version?.match(/v?(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return false;
+  const current = [Number(match[1]), Number(match[2]), Number(match[3])];
+  for (let index = 0; index < PI_MIN_NODE_VERSION.length; index += 1) {
+    if (current[index] > PI_MIN_NODE_VERSION[index]) return true;
+    if (current[index] < PI_MIN_NODE_VERSION[index]) return false;
+  }
+  return true;
+}
+
+async function detectPiInitialized(): Promise<boolean> {
+  const env = sanitizeDesktopChildEnv(await getProcessEnvWithShellPath(process.env));
+  try {
+    const output = execFileSync(process.platform === "win32" ? "pi.cmd" : "pi", ["--offline", "--list-models"], {
+      env: {
+        ...env,
+        PI_OFFLINE: "1",
+        PI_SKIP_VERSION_CHECK: "1",
+        PI_TELEMETRY: "0",
+      },
+      timeout: 20_000,
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: process.platform === "win32",
+    }).toString();
+    return /^provider\s{2,}model\s{2,}/m.test(output);
+  } catch {
+    return false;
+  }
+}
+
 function ensureRuntimeDirectory(runtime: RuntimeTarget): void {
   const home = os.homedir();
   const dirPath = runtime === "claude"
     ? path.join(home, ".claude")
-    : path.join(home, ".codex");
+    : runtime === "codex"
+    ? path.join(home, ".codex")
+    : path.join(home, ".pi", "agent");
   mkdirSync(dirPath, { recursive: true });
 }
 
@@ -120,9 +160,13 @@ async function waitForDuration(ms: number, signal: AbortSignal): Promise<void> {
 async function captureVersion(command: string): Promise<string | undefined> {
   const env = sanitizeDesktopChildEnv(await getProcessEnvWithShellPath(process.env));
   try {
-    return execSync(`${command} --version`, {
+    const executable = process.platform === "win32"
+      ? command === "node" ? "node.exe" : `${command}.cmd`
+      : command;
+    return execFileSync(executable, ["--version"], {
       env,
       timeout: 5000,
+      shell: process.platform === "win32",
     })
       .toString()
       .trim();
@@ -132,7 +176,35 @@ async function captureVersion(command: string): Promise<string | undefined> {
 }
 
 async function commandExists(command: string): Promise<boolean> {
+  if (command === "pi") {
+    const env = sanitizeDesktopChildEnv(await getProcessEnvWithShellPath(process.env));
+    try {
+      const output = execFileSync(process.platform === "win32" ? "pi.cmd" : "pi", ["--help"], {
+        env,
+        timeout: 5000,
+        stdio: ["ignore", "pipe", "pipe"],
+        shell: process.platform === "win32",
+      }).toString();
+      return /AI coding assistant/i.test(output) && /--mode\s+<mode>/i.test(output) && /--list-models/i.test(output);
+    } catch {
+      return false;
+    }
+  }
   return (await captureVersion(command)) !== undefined;
+}
+
+async function homebrewPackageInstalled(brew: string, packageName: string): Promise<boolean> {
+  const env = sanitizeDesktopChildEnv(await getProcessEnvWithShellPath(process.env));
+  try {
+    const output = execFileSync(brew, ["list", "--versions", packageName], {
+      env,
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).toString().trim();
+    return output.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 async function runCommand(
@@ -148,6 +220,7 @@ async function runCommand(
       env,
       stdio: ["ignore", "pipe", "pipe"],
       signal,
+      shell: shouldUseWindowsCommandShell(command),
     });
 
     child.stdout?.on("data", (buffer: Buffer) => {
@@ -176,12 +249,16 @@ function resolveInstallPlan(options: InstallStartOptions) {
   const includeNode = options.includeNode ?? false;
   const installClaude = options.installClaude ?? true;
   const installCodex = options.installCodex ?? true;
+  const installPi = options.installPi ?? true;
   const initializeClaude = options.initializeClaude ?? installClaude;
   const initializeCodex = options.initializeCodex ?? installCodex;
+  const initializePi = options.initializePi ?? installPi;
+  const upgradeExisting = options.upgradeExisting ?? false;
 
   const runtimes: RuntimeTarget[] = [];
   if (installClaude || initializeClaude) runtimes.push("claude");
   if (installCodex || initializeCodex) runtimes.push("codex");
+  if (installPi || initializePi) runtimes.push("pi");
 
   if (runtimes.length === 0) {
     throw new Error("No tool selected for installation");
@@ -191,14 +268,18 @@ function resolveInstallPlan(options: InstallStartOptions) {
     includeNode,
     installClaude,
     installCodex,
+    installPi,
     initializeClaude,
     initializeCodex,
+    initializePi,
+    upgradeExisting,
     runtimes,
   };
 }
 
 async function runInstallSequence(options: InstallStartOptions, signal: AbortSignal) {
   const plan = resolveInstallPlan(options);
+  let needsSetup = false;
 
   try {
     const steps = [
@@ -206,8 +287,10 @@ async function runInstallSequence(options: InstallStartOptions, signal: AbortSig
       { id: "check-node", label: "Checking Node.js" },
       ...(plan.installClaude ? [{ id: "install-claude", label: "Installing Claude Code" }] : []),
       ...(plan.installCodex ? [{ id: "install-codex", label: "Installing Codex CLI" }] : []),
+      ...(plan.installPi ? [{ id: "install-pi", label: "Installing Pi CLI" }] : []),
       ...(plan.initializeClaude ? [{ id: "init-claude", label: "Initializing Claude environment" }] : []),
       ...(plan.initializeCodex ? [{ id: "init-codex", label: "Initializing Codex environment" }] : []),
+      ...(plan.initializePi ? [{ id: "init-pi", label: "Initializing Pi environment" }] : []),
       { id: "verify", label: "Verifying installation" },
     ];
 
@@ -266,7 +349,7 @@ async function runInstallSequence(options: InstallStartOptions, signal: AbortSig
         markCancelled();
         return;
       }
-      addLog("Dry-run: Node.js found: v20.0.0");
+      addLog("Dry-run: Node.js found: v24.0.0");
       setStep("check-node", "success");
 
       for (const runtime of plan.runtimes) {
@@ -291,6 +374,17 @@ async function runInstallSequence(options: InstallStartOptions, signal: AbortSig
           }
           setStep("install-codex", "success");
         }
+
+        if (runtime === "pi" && plan.installPi) {
+          setStep("install-pi", "running");
+          addLog("Dry-run: npm install -g --ignore-scripts @earendil-works/pi-coding-agent (skipped)");
+          await waitForDuration(250, signal);
+          if (signal.aborted) {
+            markCancelled();
+            return;
+          }
+          setStep("install-pi", "success");
+        }
       }
 
       if (plan.initializeClaude) {
@@ -301,7 +395,7 @@ async function runInstallSequence(options: InstallStartOptions, signal: AbortSig
           markCancelled();
           return;
         }
-        setStep("init-claude", "success");
+        setStep("init-claude", initializationStepStatus(true));
       }
 
       if (plan.initializeCodex) {
@@ -313,6 +407,17 @@ async function runInstallSequence(options: InstallStartOptions, signal: AbortSig
           return;
         }
         setStep("init-codex", "success");
+      }
+
+      if (plan.initializePi) {
+        setStep("init-pi", "running");
+        addLog("Dry-run: Pi model/auth initialization check complete");
+        await waitForDuration(150, signal);
+        if (signal.aborted) {
+          markCancelled();
+          return;
+        }
+        setStep("init-pi", "success");
       }
 
       setStep("verify", "running");
@@ -338,12 +443,14 @@ async function runInstallSequence(options: InstallStartOptions, signal: AbortSig
           if (!existsSync(brew)) {
             throw new Error("Homebrew is required but not found");
           }
-          await runCommand([brew, "install", "node"], signal, addLog);
+          const action = nodePackageManagerAction(await homebrewPackageInstalled(brew, "node"));
+          await runCommand([brew, action, "node"], signal, addLog);
         } else if (process.platform === "win32") {
+          const action = nodePackageManagerAction(await commandExists("node"));
           await runCommand(
             [
               "winget",
-              "install",
+              action,
               "-e",
               "--id",
               "OpenJS.NodeJS.LTS",
@@ -383,6 +490,13 @@ async function runInstallSequence(options: InstallStartOptions, signal: AbortSig
       return;
     }
     addLog(`Node.js found: ${nodeVersion}`);
+    if (plan.runtimes.includes("pi") && !nodeSupportsPi(nodeVersion)) {
+      setStep("check-node", "failed", "Pi requires Node.js 22.19.0 or newer");
+      addLog(`Pi requires Node.js >=22.19.0; found ${nodeVersion}.`);
+      installState.status = "failed";
+      emitProgress();
+      return;
+    }
     setStep("check-node", "success");
 
     if (signal.aborted) {
@@ -393,7 +507,11 @@ async function runInstallSequence(options: InstallStartOptions, signal: AbortSig
     const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 
     for (const runtime of plan.runtimes) {
-      const installEnabled = runtime === "claude" ? plan.installClaude : plan.installCodex;
+      const installEnabled = runtime === "claude"
+        ? plan.installClaude
+        : runtime === "codex"
+        ? plan.installCodex
+        : plan.installPi;
       const stepId = `install-${runtime}`;
       if (!installEnabled) {
         continue;
@@ -403,15 +521,18 @@ async function runInstallSequence(options: InstallStartOptions, signal: AbortSig
       const binary = RUNTIME_BINARY[runtime];
       const alreadyInstalled = await commandExists(binary);
 
-      if (alreadyInstalled) {
+      if (alreadyInstalled && !plan.upgradeExisting) {
         addLog(`${RUNTIME_LABEL[runtime]} is already installed, skipping install.`);
         setStep(stepId, "success");
         continue;
       }
 
-      addLog(`Running: npm install -g ${RUNTIME_INSTALL_PACKAGE[runtime]}`);
+      const installArgs = [npmCommand, "install", "-g"];
+      if (runtime === "pi") installArgs.push("--ignore-scripts");
+      installArgs.push(RUNTIME_INSTALL_PACKAGE[runtime]);
+      addLog(`Running: ${installArgs.join(" ")}`);
       try {
-        await runCommand([npmCommand, "install", "-g", RUNTIME_INSTALL_PACKAGE[runtime]], signal, addLog);
+        await runCommand(installArgs, signal, addLog);
         setStep(stepId, "success");
       } catch (error) {
         if (signal.aborted || isAbortError(error)) {
@@ -441,11 +562,13 @@ async function runInstallSequence(options: InstallStartOptions, signal: AbortSig
       ensureRuntimeDirectory("claude");
       if (detectClaudeInitialized()) {
         addLog("Claude environment initialized.");
+        setStep("init-claude", "success");
       } else {
         addLog("Claude CLI is installed, but authentication was not detected.");
         addLog("Run `claude login` to finish Claude initialization.");
+        needsSetup = true;
+        setStep("init-claude", initializationStepStatus(false));
       }
-      setStep("init-claude", "success");
     }
 
     if (plan.initializeCodex) {
@@ -459,11 +582,33 @@ async function runInstallSequence(options: InstallStartOptions, signal: AbortSig
       ensureRuntimeDirectory("codex");
       if (detectCodexInitialized()) {
         addLog("Codex environment initialized.");
+        setStep("init-codex", initializationStepStatus(true));
       } else {
         addLog("Codex CLI is installed, but credentials were not detected.");
         addLog("Configure Codex API Key in Settings or run `codex login`.");
+        needsSetup = true;
+        setStep("init-codex", initializationStepStatus(false));
       }
-      setStep("init-codex", "success");
+    }
+
+    if (plan.initializePi) {
+      setStep("init-pi", "running");
+      if (!(await commandExists("pi"))) {
+        setStep("init-pi", "failed", "Pi CLI is not installed");
+        installState.status = "failed";
+        emitProgress();
+        return;
+      }
+      ensureRuntimeDirectory("pi");
+      if (await detectPiInitialized()) {
+        addLog("Pi model and authentication configuration detected.");
+        setStep("init-pi", initializationStepStatus(true));
+      } else {
+        addLog("Pi CLI is installed, but no authenticated model was detected.");
+        addLog("Run `pi`, use `/login`, then choose a model with `/model`.");
+        needsSetup = true;
+        setStep("init-pi", initializationStepStatus(false));
+      }
     }
 
     if (signal.aborted) {
@@ -484,7 +629,7 @@ async function runInstallSequence(options: InstallStartOptions, signal: AbortSig
     }
 
     setStep("verify", "success");
-    installState.status = "success";
+    installState.status = installCompletionStatus(needsSetup);
     installState.currentStep = null;
     emitProgress();
   } finally {
@@ -499,13 +644,16 @@ export function registerInstallHandlers() {
   handlersRegistered = true;
 
   ipcMain.handle("install:check-prerequisites", async (): Promise<InstallPrerequisites> => {
-    const [hasNode, hasClaude, hasCodex, nodeVersion, claudeVersion, codexVersion] = await Promise.all([
+    const [hasNode, hasClaude, hasCodex, hasPi, nodeVersion, claudeVersion, codexVersion, piVersion, piInitialized] = await Promise.all([
       commandExists("node"),
       commandExists("claude"),
       commandExists("codex"),
+      commandExists("pi"),
       captureVersion("node"),
       captureVersion("claude"),
       captureVersion("codex"),
+      captureVersion("pi"),
+      detectPiInitialized(),
     ]);
     const hasHomebrew =
       process.platform === "darwin" && (existsSync("/opt/homebrew/bin/brew") || existsSync("/usr/local/bin/brew"));
@@ -517,8 +665,12 @@ export function registerInstallHandlers() {
       claudeVersion,
       hasCodex,
       codexVersion,
+      hasPi,
+      piVersion,
       claudeInitialized: detectClaudeInitialized(),
       codexInitialized: detectCodexInitialized(),
+      piInitialized,
+      nodeSupportsPi: nodeSupportsPi(nodeVersion),
       hasHomebrew,
       platform: os.platform(),
     };
@@ -534,8 +686,11 @@ export function registerInstallHandlers() {
       includeNode: options?.includeNode ?? false,
       installClaude: options?.installClaude ?? true,
       installCodex: options?.installCodex ?? true,
+      installPi: options?.installPi ?? true,
       initializeClaude: options?.initializeClaude,
       initializeCodex: options?.initializeCodex,
+      initializePi: options?.initializePi,
+      upgradeExisting: options?.upgradeExisting ?? false,
     };
 
     runInstallSequence(startOptions, installAbortController.signal).catch((error) => {

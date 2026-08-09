@@ -34,7 +34,7 @@ const EPHEMERAL_SESSION_TABLES = [
 ] as const;
 
 /**
- * NoonFlow treats Claude Code and Codex as the sole owners of conversation
+ * NoonFlow treats Claude Code, Codex, and Pi as the sole owners of conversation
  * history. The legacy on-disk tables are kept empty for schema compatibility,
  * while the existing chat pipeline writes only to TEMP tables for the lifetime
  * of the local server process.
@@ -42,7 +42,7 @@ const EPHEMERAL_SESSION_TABLES = [
 function initializeEphemeralConversationStorage(database: Database.Database): void {
   database.transaction(() => {
     // Remove legacy NoonFlow-owned conversation copies without touching the
-    // native ~/.claude or ~/.codex stores.
+    // native ~/.claude, ~/.codex, or ~/.pi stores.
     database.exec(`
       DELETE FROM main.context_budget_events;
       DELETE FROM main.permission_requests;

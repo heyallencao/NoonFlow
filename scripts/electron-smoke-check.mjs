@@ -81,6 +81,10 @@ async function run() {
     assert(typeof prerequisites === "object" && prerequisites !== null, "install.checkPrerequisites returns object");
     assert(typeof prerequisites.hasNode === "boolean", "install.checkPrerequisites.hasNode is boolean");
     assert(typeof prerequisites.hasClaude === "boolean", "install.checkPrerequisites.hasClaude is boolean");
+    assert(typeof prerequisites.hasCodex === "boolean", "install.checkPrerequisites.hasCodex is boolean");
+    assert(typeof prerequisites.hasPi === "boolean", "install.checkPrerequisites.hasPi is boolean");
+    assert(typeof prerequisites.piInitialized === "boolean", "install.checkPrerequisites.piInitialized is boolean");
+    assert(typeof prerequisites.nodeSupportsPi === "boolean", "install.checkPrerequisites.nodeSupportsPi is boolean");
     assert(typeof prerequisites.hasHomebrew === "boolean", "install.checkPrerequisites.hasHomebrew is boolean");
     assert(typeof prerequisites.platform === "string", "install.checkPrerequisites.platform is string");
 
@@ -98,7 +102,15 @@ async function run() {
       const off = api.install.onProgress((state) => snapshots.push(state));
 
       try {
-        await api.install.start({ includeNode: false });
+        await api.install.start({
+          includeNode: false,
+          installClaude: true,
+          installCodex: true,
+          installPi: true,
+          initializeClaude: true,
+          initializeCodex: true,
+          initializePi: true,
+        });
         const deadline = Date.now() + 10_000;
         while (Date.now() < deadline) {
           const current = snapshots[snapshots.length - 1];
@@ -119,6 +131,8 @@ async function run() {
       }
     });
     assert(installSuccessResult?.final?.status === "success", "install.start reaches success in dry-run mode", installSuccessResult);
+    assert(installSuccessResult?.final?.steps?.some((step) => step.id === "install-pi" && step.status === "success"), "install.start includes successful Pi install step", installSuccessResult);
+    assert(installSuccessResult?.final?.steps?.some((step) => step.id === "init-pi" && step.status === "success"), "install.start includes successful Pi init step", installSuccessResult);
 
     const installCancelResult = await window.evaluate(async () => {
       const api = globalThis.electronAPI;

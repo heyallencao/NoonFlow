@@ -11,18 +11,23 @@ interface SkillFile {
   content: string;
   source: "global" | "project" | "plugin" | "installed";
   installedSource?: "agents" | "claude";
-  runtimeAvailability?: Array<"claude" | "codex">;
+  skillTarget?: "agents" | "claude" | "pi";
+  runtimeAvailability?: Array<"claude" | "codex" | "pi">;
   filePath: string;
 }
 
 type InstalledSource = "agents" | "claude";
-type InstalledSkill = SkillFile & { installedSource: InstalledSource; contentHash: string };
+type InstalledSkill = SkillFile & { installedSource: InstalledSource; contentHash: string; skillId: string };
 type ResolvedInstalledSkill = InstalledSkill & {
   runtimeAvailability?: SkillFile["runtimeAvailability"];
 };
 
-function getRuntimeAvailability(source: InstalledSource): Array<"claude" | "codex"> {
-  return [(source === "agents" ? "codex" : "claude") as "claude" | "codex"];
+function getRuntimeAvailability(source: InstalledSource): Array<"claude" | "codex" | "pi"> {
+  return source === "agents" ? ["codex", "pi"] : ["claude"];
+}
+
+function getTargetRuntimeAvailability(target: "agents" | "claude" | "pi"): Array<"claude" | "codex" | "pi"> {
+  return target === "agents" ? ["codex", "pi"] : [target];
 }
 
 function buildInstalledSkillPlaceholderContent({
@@ -38,7 +43,7 @@ function buildInstalledSkillPlaceholderContent({
   directoryPath: string;
   installedAt?: string;
 }): string {
-  const runtimeLabel = installedSource === "agents" ? "Codex" : "Claude Code";
+  const runtimeLabel = installedSource === "agents" ? "Codex + Pi (shared ~/.agents)" : "Claude Code";
   const lines = [
     `# ${name}`,
     "",
@@ -71,6 +76,18 @@ function getProjectCommandsDir(cwd?: string): string {
 
 function getProjectSkillsDir(cwd?: string): string {
   return path.join(cwd || process.cwd(), ".claude", "skills");
+}
+
+function getProjectAgentsSkillsDir(cwd?: string): string {
+  return path.join(cwd || process.cwd(), ".agents", "skills");
+}
+
+function getPiSkillsDir(): string {
+  return path.join(os.homedir(), ".pi", "agent", "skills");
+}
+
+function getProjectPiSkillsDir(cwd?: string): string {
+  return path.join(cwd || process.cwd(), ".pi", "skills");
 }
 
 function getPluginCommandsDirs(): string[] {
@@ -110,7 +127,11 @@ function getClaudeSkillsDir(): string {
  * Scan project-level skills from .claude/skills/{name}/SKILL.md.
  * Each subdirectory may contain a SKILL.md with optional YAML front matter.
  */
-function scanProjectSkills(dir: string): SkillFile[] {
+function scanNestedSkills(
+  dir: string,
+  source: "global" | "project",
+  skillTarget: "agents" | "claude" | "pi",
+): SkillFile[] {
   const skills: SkillFile[] = [];
   if (!fs.existsSync(dir)) return skills;
 
@@ -130,7 +151,9 @@ function scanProjectSkills(dir: string): SkillFile[] {
         name,
         description,
         content,
-        source: "project",
+        source,
+        skillTarget,
+        runtimeAvailability: getTargetRuntimeAvailability(skillTarget),
         filePath: skillMdPath,
       });
     }
@@ -234,6 +257,8 @@ function scanInstalledSkills(
         content,
         source: "installed",
         installedSource,
+        skillTarget: installedSource,
+        skillId: entry.name,
         contentHash,
         filePath: skillMdPath,
       });
@@ -277,6 +302,8 @@ function scanInstalledSkillPlaceholders(
         }),
         source: "installed",
         installedSource,
+        skillTarget: installedSource,
+        skillId: entry.name,
         runtimeAvailability: getRuntimeAvailability(installedSource),
         contentHash: lockEntry.skillFolderHash || `placeholder:${installedSource}:${entry.name}`,
         filePath: skillRoot,
@@ -318,7 +345,7 @@ function resolveInstalledSkills(
         group.find((s) => s.installedSource === preferredSource) || group[0];
       resolved.push({
         ...preferred,
-        runtimeAvailability: ["claude", "codex"] as const,
+        runtimeAvailability: ["claude", "codex", "pi"] as const,
       });
       continue;
     }
@@ -331,8 +358,9 @@ function resolveInstalledSkills(
     );
   }
 
-  return resolved.map(({ contentHash, ...rest }) => {
+  return resolved.map(({ contentHash, skillId, ...rest }) => {
     void contentHash;
+    void skillId;
     return rest;
   });
 }
@@ -340,7 +368,8 @@ function resolveInstalledSkills(
 function scanDirectory(
   dir: string,
   source: "global" | "project" | "plugin",
-  prefix = ""
+  prefix = "",
+  skillTarget?: "agents" | "claude" | "pi",
 ): SkillFile[] {
   const skills: SkillFile[] = [];
   if (!fs.existsSync(dir)) return skills;
@@ -355,7 +384,7 @@ function scanDirectory(
       if (entry.isDirectory()) {
         // Recurse into subdirectories (e.g. ~/.claude/commands/review/pr.md)
         const subPrefix = prefix ? `${prefix}:${entry.name}` : entry.name;
-        skills.push(...scanDirectory(fullPath, source, subPrefix));
+        skills.push(...scanDirectory(fullPath, source, subPrefix, skillTarget));
         continue;
       }
 
@@ -368,7 +397,19 @@ function scanDirectory(
       const description = firstLine.startsWith("#")
         ? firstLine.replace(/^#+\s*/, "")
         : firstLine || `Skill: /${name}`;
-      skills.push({ name, description, content, source, filePath });
+      skills.push({
+        name,
+        description,
+        content,
+        source,
+        ...(skillTarget
+          ? {
+              skillTarget,
+              runtimeAvailability: getTargetRuntimeAvailability(skillTarget),
+            }
+          : {}),
+        filePath,
+      });
     }
   } catch {
     // ignore read errors
@@ -383,12 +424,15 @@ export async function GET(request: NextRequest) {
     const globalDir = getGlobalCommandsDir();
     const projectDir = getProjectCommandsDir(cwd);
 
-    const globalSkills = scanDirectory(globalDir, "global");
-    const projectSkills = scanDirectory(projectDir, "project");
+    const globalSkills = scanDirectory(globalDir, "global", "", "claude");
+    const projectSkills = scanDirectory(projectDir, "project", "", "claude");
 
     // Scan project-level skills (.claude/skills/*/SKILL.md)
     const projectSkillsDir = getProjectSkillsDir(cwd);
-    const projectLevelSkills = scanProjectSkills(projectSkillsDir);
+    const projectLevelSkills = scanNestedSkills(projectSkillsDir, "project", "claude");
+    const projectAgentsSkills = scanNestedSkills(getProjectAgentsSkillsDir(cwd), "project", "agents");
+    const globalPiSkills = scanNestedSkills(getPiSkillsDir(), "global", "pi");
+    const projectPiSkills = scanNestedSkills(getProjectPiSkillsDir(cwd), "project", "pi");
 
     // Deduplicate: project commands take priority over project skills with the same name
     const projectCommandNames = new Set(projectSkills.map((s) => s.name));
@@ -398,8 +442,23 @@ export async function GET(request: NextRequest) {
 
     const agentsSkillsDir = getInstalledSkillsDir();
     const claudeSkillsDir = getClaudeSkillsDir();
+    const agentsLock = readLockFile();
+    const scannedAgentsSkills = scanInstalledSkills(agentsSkillsDir, "agents");
+    const agentsAuthoredSkills: SkillFile[] = scannedAgentsSkills
+      .filter((skill) => !agentsLock.skills[skill.skillId])
+      .map(({ contentHash, skillId, installedSource, ...skill }) => {
+        void contentHash;
+        void skillId;
+        void installedSource;
+        return {
+          ...skill,
+          source: "global" as const,
+          skillTarget: "agents" as const,
+          runtimeAvailability: ["codex", "pi"] as const,
+        };
+      });
     const agentsSkills = [
-      ...scanInstalledSkills(agentsSkillsDir, "agents"),
+      ...scannedAgentsSkills.filter((skill) => Boolean(agentsLock.skills[skill.skillId])),
       ...scanInstalledSkillPlaceholders(agentsSkillsDir, "agents"),
     ];
     const claudeSkills = [
@@ -424,7 +483,17 @@ export async function GET(request: NextRequest) {
       pluginSkills.push(...scanDirectory(dir, "plugin"));
     }
 
-    const all = [...globalSkills, ...projectSkills, ...dedupedProjectSkills, ...installedSkills, ...pluginSkills];
+    const all = [
+      ...globalSkills,
+      ...agentsAuthoredSkills,
+      ...globalPiSkills,
+      ...projectSkills,
+      ...dedupedProjectSkills,
+      ...projectAgentsSkills,
+      ...projectPiSkills,
+      ...installedSkills,
+      ...pluginSkills,
+    ];
 
     return NextResponse.json({ skills: all });
   } catch (error) {
@@ -439,11 +508,12 @@ export async function GET(request: NextRequest) {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { name, content, scope, cwd } = body as {
+    const { name, content, scope, cwd, runtime = "claude" } = body as {
       name: string;
       content: string;
       scope: "global" | "project";
       cwd?: string;
+      runtime?: "claude" | "codex" | "pi";
     };
 
     if (!name || typeof name !== "string") {
@@ -462,14 +532,23 @@ export async function POST(request: Request) {
       );
     }
 
-    const dir =
-      scope === "project" ? getProjectCommandsDir(cwd) : getGlobalCommandsDir();
-
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+    if (scope !== "global" && scope !== "project") {
+      return NextResponse.json({ error: "Invalid skill scope" }, { status: 400 });
+    }
+    if (runtime !== "claude" && runtime !== "codex" && runtime !== "pi") {
+      return NextResponse.json({ error: "Invalid skill runtime" }, { status: 400 });
+    }
+    if (scope === "project" && !cwd) {
+      return NextResponse.json({ error: "A workspace is required for project skills" }, { status: 400 });
     }
 
-    const filePath = path.join(dir, `${safeName}.md`);
+    const skillTarget = runtime === "claude" ? "claude" : "agents";
+    const rootDir = skillTarget === "claude"
+      ? (scope === "project" ? getProjectCommandsDir(cwd) : getGlobalCommandsDir())
+      : (scope === "project" ? getProjectAgentsSkillsDir(cwd) : getInstalledSkillsDir());
+    const filePath = skillTarget === "claude"
+      ? path.join(rootDir, `${safeName}.md`)
+      : path.join(rootDir, safeName, "SKILL.md");
     if (fs.existsSync(filePath)) {
       return NextResponse.json(
         { error: "A skill with this name already exists" },
@@ -477,6 +556,7 @@ export async function POST(request: Request) {
       );
     }
 
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, content || "", "utf-8");
 
     const firstLine = (content || "").split("\n")[0]?.trim() || "";
@@ -491,6 +571,8 @@ export async function POST(request: Request) {
           description,
           content: content || "",
           source: scope || "global",
+          skillTarget,
+          runtimeAvailability: skillTarget === "agents" ? ["codex", "pi"] : ["claude"],
           filePath,
         },
       },

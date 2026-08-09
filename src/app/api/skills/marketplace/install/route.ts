@@ -49,9 +49,9 @@ function extractSkillNameFromSource(source: string): string | null {
   return parts[parts.length - 1] || null;
 }
 
-function checkSkillExists(skillName: string, runtime: "claude-code" | "codex"): boolean {
+function checkSkillExists(skillName: string, runtime: "claude-code" | "codex" | "pi"): boolean {
   const installedDir =
-    runtime === "codex" ? getInstalledSkillsDir() : getClaudeSkillsDir();
+    runtime === "codex" || runtime === "pi" ? getInstalledSkillsDir() : getClaudeSkillsDir();
   if (fs.existsSync(path.join(installedDir, skillName))) {
     return true;
   }
@@ -84,7 +84,7 @@ export async function POST(request: Request) {
     const { source, global: isGlobal, runtime = "claude-code" } = body as {
       source: string;
       global?: boolean;
-      runtime?: "claude-code" | "codex";
+      runtime?: "claude-code" | "codex" | "pi";
     };
 
     if (!source || typeof source !== "string") {
@@ -94,7 +94,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const validRuntimes = ["claude-code", "codex"];
+    const validRuntimes = ["claude-code", "codex", "pi"];
     if (!validRuntimes.includes(runtime)) {
       return NextResponse.json(
         { error: `Invalid runtime: ${runtime}. Must be one of: ${validRuntimes.join(", ")}` },
@@ -111,7 +111,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const args = ["add", source, "-y", "--agent", runtime];
+    const args = ["add", source, "-y", "--agent", runtime === "pi" ? "codex" : runtime];
     if (isGlobal !== false) {
       args.splice(3, 0, "-g");
     }

@@ -19,7 +19,8 @@ export interface SkillItem {
   content: string;
   source: "global" | "project" | "plugin" | "installed";
   installedSource?: "agents" | "claude";
-  runtimeAvailability?: Array<"claude" | "codex">;
+  skillTarget?: "agents" | "claude" | "pi";
+  runtimeAvailability?: Array<"claude" | "codex" | "pi">;
   filePath: string;
   enabled?: boolean;
 }
@@ -126,6 +127,11 @@ export function SkillListItem({
       </div>
 
       <div className="flex items-center gap-2 shrink-0 ml-2" onClick={(e) => e.stopPropagation()}>
+        {skill.runtimeAvailability?.map((runtime) => (
+          <span key={runtime} className="rounded border border-border-subtle bg-muted/30 px-1.5 py-0.5 text-[9px] font-medium uppercase text-muted-foreground">
+            {runtime === "claude" ? "Claude" : runtime === "codex" ? "Codex" : "Pi"}
+          </span>
+        ))}
         {hovered && !confirmDelete && (
           <Tooltip>
             <TooltipTrigger asChild>

@@ -97,6 +97,15 @@ describe('chat preferences', () => {
     assert.equal(preferences.provider_id, 'env');
   });
 
+  it('returns pi when explicitly stored', () => {
+    const storage = createMemoryStorage();
+    storage.setItem('monolith:last-assistant-runtime', 'pi');
+    globalObject.localStorage = storage;
+    globalObject.window = globalObject as unknown as Window & typeof globalThis;
+
+    assert.equal(getStoredChatPreferences().assistant_runtime, 'pi');
+  });
+
   it('keeps Claude model/provider when runtime is unset', () => {
     const storage = createMemoryStorage();
     storage.setItem('monolith:last-model', 'sonnet');
@@ -130,6 +139,16 @@ describe('chat preferences', () => {
 
     const payload = buildCreateSessionPreferencePayload('codex');
     assert.deepEqual(payload, { assistant_runtime: 'codex' });
+  });
+
+  it('drops Claude model/provider for explicit Pi sessions', () => {
+    const storage = createMemoryStorage();
+    storage.setItem('monolith:last-model', 'sonnet');
+    storage.setItem('monolith:last-provider-id', 'env');
+    globalObject.localStorage = storage;
+    globalObject.window = globalObject as unknown as Window & typeof globalThis;
+
+    assert.deepEqual(buildCreateSessionPreferencePayload('pi'), { assistant_runtime: 'pi' });
   });
 
   it('keeps Claude model/provider for explicit Claude sessions', () => {

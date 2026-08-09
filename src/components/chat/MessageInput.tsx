@@ -15,7 +15,7 @@ import {
   PromptInputTools,
 } from '@/components/ai-elements/prompt-input';
 import { subscribeProviderChanged } from '@/lib/events/app-event-bus';
-import { useProviderModelsQuery } from '@/lib/queries/provider-queries';
+import { usePiModelsQuery, useProviderModelsQuery } from '@/lib/queries/provider-queries';
 import type { CommandBadge } from './message-input/constants';
 import { DEFAULT_MODEL_OPTIONS } from './message-input/constants';
 import {
@@ -89,6 +89,7 @@ export function MessageInput({
   });
 
   const providerModelsQuery = useProviderModelsQuery();
+  const piModelsQuery = usePiModelsQuery(assistantRuntime === 'pi');
 
   useEffect(() => {
     const unsubscribe = subscribeProviderChanged(() => {
@@ -159,7 +160,11 @@ export function MessageInput({
   const fallbackClaudeModel = modelOptions[0]?.value || DEFAULT_MODEL_OPTIONS[0].value;
 
   const isClaudeRuntime = assistantRuntime === 'claude_code';
-  const currentModelValue = modelName || (isClaudeRuntime ? fallbackClaudeModel : 'codex');
+  const currentModelValue = modelName || (isClaudeRuntime
+    ? fallbackClaudeModel
+    : assistantRuntime === 'pi'
+      ? piModelsQuery.data?.default_model || piModelsQuery.data?.models[0]?.value || ''
+      : 'codex');
   const currentModelOption = modelOptions.find((model) => model.value === currentModelValue) || modelOptions[0];
   const chatStatus: ChatStatus = isStreaming ? 'streaming' : 'ready';
   const showQuickSkillCards = showQuickSkills && !badge && !inputValue.trim();
@@ -280,7 +285,9 @@ export function MessageInput({
                   ? t('messageInput.placeholderBadge')
                   : assistantRuntime === 'codex'
                     ? t('messageInput.placeholderCodex')
-                    : t('messageInput.placeholderClaude')
+                    : assistantRuntime === 'pi'
+                      ? t('messageInput.placeholderPi')
+                      : t('messageInput.placeholderClaude')
               }
               value={inputValue}
               onChange={(e) => {
@@ -298,17 +305,20 @@ export function MessageInput({
                 <MessageModeToggle mode={mode} onModeChange={onModeChange} t={t} />
 
                 <ModelSelector
+                  assistantRuntime={assistantRuntime}
                   isClaudeRuntime={isClaudeRuntime}
                   modelName={modelName}
                   currentModelValue={currentModelValue}
                   currentProviderIdValue={currentProviderIdValue}
                   currentModelLabel={currentModelOption.label}
                   providerGroups={providerGroups}
+                  piModels={piModelsQuery.data?.models || []}
+                  piModelsError={piModelsQuery.data?.error}
                   onModelChange={onModelChange}
                   onProviderModelChange={onProviderModelChange}
                 />
 
-                {!isClaudeRuntime && (
+                {assistantRuntime === 'codex' && (
                   <CodexEffortSelector
                     modelName={modelName}
                     onModelChange={onModelChange}

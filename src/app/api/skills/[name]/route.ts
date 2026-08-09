@@ -4,6 +4,7 @@ import path from "path";
 import os from "os";
 import crypto from "crypto";
 import { spawnSkillsCliSync } from "@/lib/skills-cli";
+import { readLockFile } from "@/lib/skills-lock";
 
 function getGlobalCommandsDir(): string {
   return path.join(os.homedir(), ".claude", "commands");
@@ -17,6 +18,18 @@ function getProjectSkillsDir(cwd?: string): string {
   return path.join(cwd || process.cwd(), ".claude", "skills");
 }
 
+function getProjectAgentsSkillsDir(cwd?: string): string {
+  return path.join(cwd || process.cwd(), ".agents", "skills");
+}
+
+function getPiSkillsDir(): string {
+  return path.join(os.homedir(), ".pi", "agent", "skills");
+}
+
+function getProjectPiSkillsDir(cwd?: string): string {
+  return path.join(cwd || process.cwd(), ".pi", "skills");
+}
+
 function getInstalledSkillsDir(): string {
   return path.join(os.homedir(), ".agents", "skills");
 }
@@ -26,11 +39,14 @@ function getClaudeSkillsDir(): string {
 }
 
 type InstalledSource = "agents" | "claude";
+type SkillTarget = "agents" | "claude" | "pi";
 type SkillSource = "global" | "project" | "installed";
+type SkillScope = "global" | "project";
 type SkillMatch = {
   filePath: string;
   source: SkillSource;
   installedSource?: InstalledSource;
+  skillTarget?: SkillTarget;
   directoryPath?: string;
   skillId?: string;
   virtual?: boolean;
@@ -200,62 +216,139 @@ function findInstalledSkillMatches(
   return matches;
 }
 
+function findNestedSkillPath(root: string, name: string): string | null {
+  const exactPath = path.join(root, name, "SKILL.md");
+  if (fs.existsSync(exactPath)) return exactPath;
+  if (!fs.existsSync(root)) return null;
+
+  try {
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith(".") || entry.name === name) continue;
+      const skillMdPath = path.join(root, entry.name, "SKILL.md");
+      if (!fs.existsSync(skillMdPath)) continue;
+      const meta = parseSkillFrontMatter(fs.readFileSync(skillMdPath, "utf-8"));
+      if (meta.name === name) return skillMdPath;
+    }
+  } catch {
+    // ignore read errors
+  }
+  return null;
+}
+
 function findSkillFile(
   name: string,
-  options?: { installedSource?: InstalledSource; installedOnly?: boolean; cwd?: string }
+  options?: {
+    installedSource?: InstalledSource;
+    installedOnly?: boolean;
+    cwd?: string;
+    skillTarget?: SkillTarget;
+    scope?: SkillScope;
+  }
 ):
   | SkillMatch
   | { conflict: true; sources: InstalledSource[] }
   | null {
   const installedSource = options?.installedSource;
+  const skillTarget = options?.skillTarget;
 
   if (!options?.installedOnly) {
-    // Check project commands → project skills → global commands → installed
-    const projectPath = path.join(getProjectCommandsDir(options?.cwd), `${name}.md`);
-    if (fs.existsSync(projectPath)) {
-      return { filePath: projectPath, source: "project" };
-    }
-
-    // Check project-level .claude/skills/{name}/SKILL.md
-    const projectSkillPath = path.join(getProjectSkillsDir(options?.cwd), name, "SKILL.md");
-    if (fs.existsSync(projectSkillPath)) {
-      return { filePath: projectSkillPath, source: "project" };
-    }
-
-    // Check project-level skills by front matter name (scan all subdirs)
-    const projectSkillsDir = getProjectSkillsDir(options?.cwd);
-    if (fs.existsSync(projectSkillsDir)) {
-      try {
-        const entries = fs.readdirSync(projectSkillsDir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-          if (entry.name === name) continue; // already checked above
-          const skillMdPath = path.join(projectSkillsDir, entry.name, "SKILL.md");
-          if (!fs.existsSync(skillMdPath)) continue;
-          const skillContent = fs.readFileSync(skillMdPath, "utf-8");
-          const meta = parseSkillFrontMatter(skillContent);
-          if (meta.name === name) {
-            return { filePath: skillMdPath, source: "project" };
+    if (skillTarget !== "claude" && skillTarget !== "pi" && options?.scope !== "global") {
+      const projectAgentsRoot = getProjectAgentsSkillsDir(options?.cwd);
+      const exactProjectAgentPath = path.join(projectAgentsRoot, name, "SKILL.md");
+      if (fs.existsSync(exactProjectAgentPath)) {
+        return { filePath: exactProjectAgentPath, source: "project", skillTarget: "agents" };
+      }
+      if (fs.existsSync(projectAgentsRoot)) {
+        try {
+          for (const entry of fs.readdirSync(projectAgentsRoot, { withFileTypes: true })) {
+            if (!entry.isDirectory() || entry.name.startsWith(".") || entry.name === name) continue;
+            const skillMdPath = path.join(projectAgentsRoot, entry.name, "SKILL.md");
+            if (!fs.existsSync(skillMdPath)) continue;
+            const meta = parseSkillFrontMatter(fs.readFileSync(skillMdPath, "utf-8"));
+            if (meta.name === name) {
+              return { filePath: skillMdPath, source: "project", skillTarget: "agents" };
+            }
           }
+        } catch {
+          // ignore read errors
         }
-      } catch {
-        // ignore read errors
       }
     }
 
-    const globalPath = path.join(getGlobalCommandsDir(), `${name}.md`);
-    if (fs.existsSync(globalPath)) {
-      return { filePath: globalPath, source: "global" };
+    if (skillTarget !== "agents" && skillTarget !== "claude") {
+      if (options?.scope !== "global") {
+        const projectPiPath = findNestedSkillPath(getProjectPiSkillsDir(options?.cwd), name);
+        if (projectPiPath) {
+          return { filePath: projectPiPath, source: "project", skillTarget: "pi" };
+        }
+      }
+
+      if (options?.scope !== "project") {
+        const globalPiPath = findNestedSkillPath(getPiSkillsDir(), name);
+        if (globalPiPath) {
+          return { filePath: globalPiPath, source: "global", skillTarget: "pi" };
+        }
+      }
+    }
+
+    if (skillTarget !== "agents" && skillTarget !== "pi") {
+      if (options?.scope !== "global") {
+        // Check project commands → project skills → global commands → installed
+        const projectPath = path.join(getProjectCommandsDir(options?.cwd), `${name}.md`);
+        if (fs.existsSync(projectPath)) {
+          return { filePath: projectPath, source: "project", skillTarget: "claude" };
+        }
+
+        // Check project-level .claude/skills/{name}/SKILL.md
+        const projectSkillPath = path.join(getProjectSkillsDir(options?.cwd), name, "SKILL.md");
+        if (fs.existsSync(projectSkillPath)) {
+          return { filePath: projectSkillPath, source: "project", skillTarget: "claude" };
+        }
+
+        // Check project-level skills by front matter name (scan all subdirs)
+        const projectSkillsDir = getProjectSkillsDir(options?.cwd);
+        if (fs.existsSync(projectSkillsDir)) {
+          try {
+            const entries = fs.readdirSync(projectSkillsDir, { withFileTypes: true });
+            for (const entry of entries) {
+              if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+              if (entry.name === name) continue; // already checked above
+              const skillMdPath = path.join(projectSkillsDir, entry.name, "SKILL.md");
+              if (!fs.existsSync(skillMdPath)) continue;
+              const skillContent = fs.readFileSync(skillMdPath, "utf-8");
+              const meta = parseSkillFrontMatter(skillContent);
+              if (meta.name === name) {
+                return { filePath: skillMdPath, source: "project", skillTarget: "claude" };
+              }
+            }
+          } catch {
+            // ignore read errors
+          }
+        }
+      }
+
+      if (options?.scope !== "project") {
+        const globalPath = path.join(getGlobalCommandsDir(), `${name}.md`);
+        if (fs.existsSync(globalPath)) {
+          return { filePath: globalPath, source: "global", skillTarget: "claude" };
+        }
+      }
     }
   }
 
-  const installedMatches = findInstalledSkillMatches(name, installedSource);
+  if (options?.scope === "project" || skillTarget === "pi") return null;
+
+  const effectiveInstalledSource = installedSource ?? skillTarget;
+  const installedMatches = findInstalledSkillMatches(name, effectiveInstalledSource);
   if (installedMatches.length === 1) {
     const match = installedMatches[0];
+    const isAuthoredAgentsSkill = match.installedSource === "agents"
+      && !readLockFile().skills[match.skillId];
     return {
       filePath: match.filePath,
-      source: "installed",
-      installedSource: match.installedSource,
+      source: isAuthoredAgentsSkill ? "global" : "installed",
+      installedSource: isAuthoredAgentsSkill ? undefined : match.installedSource,
+      skillTarget: match.installedSource,
       directoryPath: match.directoryPath,
       skillId: match.skillId,
       virtual: match.virtual,
@@ -273,6 +366,7 @@ function findSkillFile(
         filePath: preferredMatch.filePath,
         source: "installed",
         installedSource: preferredMatch.installedSource,
+        skillTarget: preferredMatch.installedSource,
         directoryPath: preferredMatch.directoryPath,
         skillId: preferredMatch.skillId,
         virtual: preferredMatch.virtual,
@@ -298,6 +392,8 @@ export async function GET(
     const { name } = await params;
     const url = new URL(_request.url);
     const sourceParam = url.searchParams.get("source");
+    const targetParam = url.searchParams.get("target");
+    const scopeParam = url.searchParams.get("scope");
     const cwdParam = url.searchParams.get("cwd") || undefined;
     const installedSource =
       sourceParam === "agents" || sourceParam === "claude"
@@ -309,10 +405,18 @@ export async function GET(
         { status: 400 }
       );
     }
+    const skillTarget = targetParam === "agents" || targetParam === "claude" || targetParam === "pi" ? targetParam : undefined;
+    if (targetParam && !skillTarget) {
+      return NextResponse.json({ error: "Invalid target; expected 'agents', 'claude', or 'pi'" }, { status: 400 });
+    }
+    const scope = scopeParam === "global" || scopeParam === "project" ? scopeParam : undefined;
+    if (scopeParam && !scope) {
+      return NextResponse.json({ error: "Invalid scope; expected 'global' or 'project'" }, { status: 400 });
+    }
 
     const found = installedSource
-      ? findSkillFile(name, { installedSource, installedOnly: true, cwd: cwdParam })
-      : findSkillFile(name, { cwd: cwdParam });
+      ? findSkillFile(name, { installedSource, installedOnly: true, cwd: cwdParam, skillTarget, scope })
+      : findSkillFile(name, { cwd: cwdParam, skillTarget, scope });
     if (found && "conflict" in found) {
       return NextResponse.json(
         { error: "Multiple skills with different content", sources: found.sources },
@@ -349,6 +453,8 @@ export async function GET(
         content,
         source: found.source,
         installedSource: found.installedSource,
+        skillTarget: found.skillTarget,
+        runtimeAvailability: found.skillTarget === "agents" ? ["codex", "pi"] : [found.skillTarget === "pi" ? "pi" : "claude"],
         filePath: found.filePath,
       },
     });
@@ -371,6 +477,8 @@ export async function PUT(
 
     const url = new URL(request.url);
     const sourceParam = url.searchParams.get("source");
+    const targetParam = url.searchParams.get("target");
+    const scopeParam = url.searchParams.get("scope");
     const cwdParam = url.searchParams.get("cwd") || undefined;
     const installedSource =
       sourceParam === "agents" || sourceParam === "claude"
@@ -382,10 +490,18 @@ export async function PUT(
         { status: 400 }
       );
     }
+    const skillTarget = targetParam === "agents" || targetParam === "claude" || targetParam === "pi" ? targetParam : undefined;
+    if (targetParam && !skillTarget) {
+      return NextResponse.json({ error: "Invalid target; expected 'agents', 'claude', or 'pi'" }, { status: 400 });
+    }
+    const scope = scopeParam === "global" || scopeParam === "project" ? scopeParam : undefined;
+    if (scopeParam && !scope) {
+      return NextResponse.json({ error: "Invalid scope; expected 'global' or 'project'" }, { status: 400 });
+    }
 
     const found = installedSource
-      ? findSkillFile(name, { installedSource, installedOnly: true, cwd: cwdParam })
-      : findSkillFile(name, { cwd: cwdParam });
+      ? findSkillFile(name, { installedSource, installedOnly: true, cwd: cwdParam, skillTarget, scope })
+      : findSkillFile(name, { cwd: cwdParam, skillTarget, scope });
     if (found && "conflict" in found) {
       return NextResponse.json(
         { error: "Multiple skills with different content", sources: found.sources },
@@ -415,6 +531,8 @@ export async function PUT(
         content: content ?? "",
         source: found.source,
         installedSource: found.installedSource,
+        skillTarget: found.skillTarget,
+        runtimeAvailability: found.skillTarget === "agents" ? ["codex", "pi"] : [found.skillTarget === "pi" ? "pi" : "claude"],
         filePath: targetPath,
       },
     });
@@ -434,6 +552,8 @@ export async function DELETE(
     const { name } = await params;
     const url = new URL(_request.url);
     const sourceParam = url.searchParams.get("source");
+    const targetParam = url.searchParams.get("target");
+    const scopeParam = url.searchParams.get("scope");
     const cwdParam = url.searchParams.get("cwd") || undefined;
     const installedSource =
       sourceParam === "agents" || sourceParam === "claude"
@@ -445,10 +565,18 @@ export async function DELETE(
         { status: 400 }
       );
     }
+    const skillTarget = targetParam === "agents" || targetParam === "claude" || targetParam === "pi" ? targetParam : undefined;
+    if (targetParam && !skillTarget) {
+      return NextResponse.json({ error: "Invalid target; expected 'agents', 'claude', or 'pi'" }, { status: 400 });
+    }
+    const scope = scopeParam === "global" || scopeParam === "project" ? scopeParam : undefined;
+    if (scopeParam && !scope) {
+      return NextResponse.json({ error: "Invalid scope; expected 'global' or 'project'" }, { status: 400 });
+    }
 
     const found = installedSource
-      ? findSkillFile(name, { installedSource, installedOnly: true, cwd: cwdParam })
-      : findSkillFile(name, { cwd: cwdParam });
+      ? findSkillFile(name, { installedSource, installedOnly: true, cwd: cwdParam, skillTarget, scope })
+      : findSkillFile(name, { cwd: cwdParam, skillTarget, scope });
     if (found && "conflict" in found) {
       return NextResponse.json(
         { error: "Multiple skills with different content", sources: found.sources },
@@ -485,6 +613,14 @@ export async function DELETE(
     }
 
     fs.unlinkSync(found.filePath);
+    if (path.basename(found.filePath) === "SKILL.md") {
+      const skillDir = path.dirname(found.filePath);
+      try {
+        if (fs.readdirSync(skillDir).length === 0) fs.rmdirSync(skillDir);
+      } catch {
+        // The skill may have companion assets; leave the directory intact.
+      }
+    }
     return NextResponse.json({ success: true });
   } catch (error) {
     return NextResponse.json(

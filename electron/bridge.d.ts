@@ -47,8 +47,12 @@ export interface InstallPrerequisites {
   claudeVersion?: string;
   hasCodex: boolean;
   codexVersion?: string;
+  hasPi: boolean;
+  piVersion?: string;
   claudeInitialized: boolean;
   codexInitialized: boolean;
+  piInitialized: boolean;
+  nodeSupportsPi: boolean;
   hasHomebrew: boolean;
   platform: string;
 }
@@ -57,12 +61,15 @@ export interface InstallStartOptions {
   includeNode?: boolean;
   installClaude?: boolean;
   installCodex?: boolean;
+  installPi?: boolean;
   initializeClaude?: boolean;
   initializeCodex?: boolean;
+  initializePi?: boolean;
+  upgradeExisting?: boolean;
 }
 
-export type InstallStepStatus = "pending" | "running" | "success" | "failed" | "skipped";
-export type InstallStatus = "idle" | "running" | "success" | "failed" | "cancelled";
+export type InstallStepStatus = "pending" | "running" | "success" | "needs_setup" | "failed" | "skipped";
+export type InstallStatus = "idle" | "running" | "success" | "needs_setup" | "failed" | "cancelled";
 
 export interface InstallState {
   status: InstallStatus;

@@ -6,6 +6,25 @@ import path from 'path';
 
 const execFileAsync = promisify(execFile);
 
+export interface PiModelInfo {
+  provider: string;
+  id: string;
+  value: string;
+  label: string;
+  contextWindow: number | null;
+  maxOutputTokens: number | null;
+  reasoning: boolean;
+  images: boolean;
+}
+
+export interface PiModelProbe {
+  models: PiModelInfo[];
+  error?: string;
+}
+
+let piModelProbeCache: { binary: string; expiresAt: number; value: PiModelProbe } | null = null;
+let piModelProbeInFlight: Promise<PiModelProbe> | null = null;
+
 export const isWindows = process.platform === 'win32';
 export const isMac = process.platform === 'darwin';
 
@@ -156,6 +175,50 @@ export function getCodexCandidatePaths(): string[] {
   ];
 }
 
+export function getPiCandidatePaths(): string[] {
+  const home = os.homedir();
+  if (isWindows) {
+    const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+    const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+    const exts = ['.cmd', '.exe', '.bat', ''];
+    const baseDirs = [
+      path.join(appData, 'npm'),
+      path.join(localAppData, 'npm'),
+      path.join(home, '.npm-global', 'bin'),
+      path.join(home, '.local', 'bin'),
+    ];
+    return baseDirs.flatMap((dir) => exts.map((ext) => path.join(dir, `pi${ext}`)));
+  }
+
+  return [
+    '/usr/local/bin/pi',
+    '/opt/homebrew/bin/pi',
+    '/opt/homebrew/opt/node/bin/pi',
+    '/usr/local/opt/node/bin/pi',
+    path.join(home, '.npm-global', 'bin', 'pi'),
+    path.join(home, '.volta', 'bin', 'pi'),
+    path.join(home, '.nvm', 'current', 'bin', 'pi'),
+    path.join(home, '.local', 'bin', 'pi'),
+    ...getNvmNodeBinDirs().map((binDir) => path.join(binDir, 'pi')),
+  ];
+}
+
+function isPiCodingAgent(candidate: string): boolean {
+  if (!isExecutableFile(candidate)) return false;
+  try {
+    const output = execFileSync(candidate, ['--help'], {
+      timeout: 5000,
+      maxBuffer: 1024 * 1024,
+      stdio: 'pipe',
+      env: { ...process.env, PATH: getExpandedPath() },
+      shell: needsShell(candidate),
+    }).toString();
+    return /AI coding assistant/i.test(output) && /--mode\s+<mode>/i.test(output) && /--list-models/i.test(output);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Build an expanded PATH string with extra directories, deduped and filtered.
  */
@@ -179,6 +242,8 @@ let _cachedBinaryPath: string | undefined | null = null; // null = not cached
 let _cachedBinaryTimestamp = 0;
 let _cachedCodexBinaryPath: string | undefined | null = null;
 let _cachedCodexBinaryTimestamp = 0;
+let _cachedPiBinaryPath: string | undefined | null = null;
+let _cachedPiBinaryTimestamp = 0;
 const BINARY_CACHE_TTL = 60_000; // 60 seconds
 
 /**
@@ -270,6 +335,44 @@ export function findCodexBinary(): string | undefined {
   return found;
 }
 
+export function findPiBinary(): string | undefined {
+  const now = Date.now();
+  if (_cachedPiBinaryPath !== null && now - _cachedPiBinaryTimestamp < BINARY_CACHE_TTL) {
+    return _cachedPiBinaryPath;
+  }
+
+  for (const candidate of getPiCandidatePaths()) {
+    if (isPiCodingAgent(candidate)) {
+      _cachedPiBinaryPath = candidate;
+      _cachedPiBinaryTimestamp = now;
+      return candidate;
+    }
+  }
+
+  try {
+    const command = isWindows ? 'where' : '/usr/bin/which';
+    const result = execFileSync(command, ['pi'], {
+      timeout: 3000,
+      stdio: 'pipe',
+      env: { ...process.env, PATH: getExpandedPath() },
+      shell: isWindows,
+    });
+    for (const line of result.toString().trim().split(/\r?\n/)) {
+      const candidate = line.trim();
+      if (candidate && isPiCodingAgent(candidate)) {
+        _cachedPiBinaryPath = candidate;
+        _cachedPiBinaryTimestamp = now;
+        return candidate;
+      }
+    }
+  } catch {
+    // not found
+  }
+
+  _cachedPiBinaryPath = null;
+  return undefined;
+}
+
 function _findCodexBinaryUncached(): string | undefined {
   for (const p of getCodexCandidatePaths()) {
     if (!isExecutableFile(p)) {
@@ -333,6 +436,112 @@ export async function getCodexVersion(codexPath: string): Promise<string | null>
   } catch {
     return null;
   }
+}
+
+export async function getPiVersion(piPath: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(piPath, ['--version'], {
+      timeout: 5000,
+      env: { ...process.env, PATH: getExpandedPath() },
+      shell: needsShell(piPath),
+    });
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function parseCompactTokenCount(value: string): number | null {
+  const match = value.trim().match(/^(\d+(?:\.\d+)?)([KM])?$/i);
+  if (!match) return null;
+  const base = Number(match[1]);
+  if (!Number.isFinite(base)) return null;
+  const multiplier = match[2]?.toUpperCase() === 'M'
+    ? 1_000_000
+    : match[2]?.toUpperCase() === 'K'
+    ? 1_000
+    : 1;
+  return Math.round(base * multiplier);
+}
+
+function stripAnsi(value: string): string {
+  return value.replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, '');
+}
+
+export function parsePiModelListOutput(stdout: string): PiModelInfo[] {
+  const lines = stripAnsi(stdout)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const headerIndex = lines.findIndex((line) => /^provider\s{2,}model\s{2,}context\s{2,}max-out\s{2,}thinking\s{2,}images$/i.test(line));
+  if (headerIndex < 0) return [];
+
+  return lines.slice(headerIndex + 1).flatMap((line) => {
+    const columns = line.split(/\s{2,}/).map((column) => column.trim());
+    if (columns.length < 6) return [];
+    const [provider, id, context, maxOutput, thinking, images] = columns;
+    if (!provider || !id) return [];
+    return [{
+      provider,
+      id,
+      value: `${provider}/${id}`,
+      label: `${id} · ${provider}`,
+      contextWindow: parseCompactTokenCount(context),
+      maxOutputTokens: parseCompactTokenCount(maxOutput),
+      reasoning: thinking.toLowerCase() === 'yes',
+      images: images.toLowerCase() === 'yes',
+    }];
+  });
+}
+
+async function listPiModelsUncached(piPath: string): Promise<PiModelProbe> {
+  try {
+    const { stdout, stderr } = await execFileAsync(piPath, ['--offline', '--list-models'], {
+      cwd: os.homedir(),
+      timeout: 20_000,
+      maxBuffer: 4 * 1024 * 1024,
+      env: {
+        ...process.env,
+        PATH: getExpandedPath(),
+        PI_OFFLINE: '1',
+        PI_SKIP_VERSION_CHECK: '1',
+        PI_TELEMETRY: '0',
+      },
+      shell: needsShell(piPath),
+    });
+    const models = parsePiModelListOutput(stdout);
+    const combined = `${stdout}\n${stderr}`;
+    return {
+      models,
+      ...(models.length === 0 && !/No models available/i.test(combined)
+        ? { error: stripAnsi(combined).trim() || 'Pi returned no model catalog' }
+        : {}),
+    };
+  } catch (error) {
+    const detail = error && typeof error === 'object'
+      ? `${'stdout' in error ? String(error.stdout || '') : ''}\n${'stderr' in error ? String(error.stderr || '') : ''}`.trim()
+      : '';
+    return {
+      models: [],
+      error: stripAnsi(detail || (error instanceof Error ? error.message : String(error))).trim(),
+    };
+  }
+}
+
+export async function listPiModels(piPath: string): Promise<PiModelProbe> {
+  const now = Date.now();
+  if (piModelProbeCache?.binary === piPath && piModelProbeCache.expiresAt > now) {
+    return piModelProbeCache.value;
+  }
+  if (piModelProbeInFlight) return piModelProbeInFlight;
+
+  piModelProbeInFlight = listPiModelsUncached(piPath).then((value) => {
+    piModelProbeCache = { binary: piPath, expiresAt: Date.now() + 30_000, value };
+    return value;
+  }).finally(() => {
+    piModelProbeInFlight = null;
+  });
+  return piModelProbeInFlight;
 }
 
 /**

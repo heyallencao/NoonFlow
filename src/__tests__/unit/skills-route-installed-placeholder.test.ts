@@ -72,7 +72,7 @@ describe("/api/skills installed placeholders", () => {
         description: string;
         filePath: string;
         content: string;
-        runtimeAvailability?: Array<"claude" | "codex">;
+        runtimeAvailability?: Array<"claude" | "codex" | "pi">;
       }>;
     };
 

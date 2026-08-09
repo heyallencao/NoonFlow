@@ -28,7 +28,7 @@ import { getWorkspaceName, getWorkspacePathHint, normalizeWorkspacePath } from "
 import { useWorkspaceStore } from "@/stores/workspace-store";
 
 interface ReplaySessionInfo {
-  runtime: "claude_code" | "codex";
+  runtime: "claude_code" | "codex" | "pi";
   sessionId: string;
   projectPath: string;
   projectName: string;
@@ -94,7 +94,7 @@ async function fetchSessionReplays({
 }): Promise<ReplaySessionsResponse> {
   const params = new URLSearchParams({ cursor: String(cursor), limit: String(limit) });
   for (const workspace of workspaces) params.append("workspace", workspace);
-  if (runtime === "claude_code" || runtime === "codex") params.set("runtime", runtime);
+  if (runtime === "claude_code" || runtime === "codex" || runtime === "pi") params.set("runtime", runtime);
   if (query) params.set("query", query);
   const res = await fetch(`/api/session-replays?${params.toString()}`);
   if (!res.ok) throw new Error("Failed to fetch sessions");
@@ -253,6 +253,7 @@ export function MemoryRecentSessionsCard() {
                 { value: RUNTIME_FILTER_ALL, label: t("memory.runtimeAll") || "All" },
                 { value: "claude_code", label: t("memory.runtimeClaude") || "Claude" },
                 { value: "codex", label: t("memory.runtimeCodex") || "Codex" },
+                { value: "pi", label: "Pi" },
               ].map((option) => (
                 <button
                   key={option.value}
@@ -393,7 +394,7 @@ export function MemoryRecentSessionsCard() {
                     >
                       <div className={cn(
                         "mt-1 h-2.5 w-2.5 shrink-0 rounded-full",
-                        session.runtime === "codex" ? "bg-emerald-500" : "bg-blue-500"
+                        session.runtime === "codex" ? "bg-emerald-500" : session.runtime === "pi" ? "bg-violet-500" : "bg-blue-500"
                       )} />
 
                       <div className="min-w-0 flex-1">
@@ -409,7 +410,7 @@ export function MemoryRecentSessionsCard() {
                           <span className="inline-flex items-center gap-1">
                             <span className={cn(
                               "h-1.5 w-1.5 rounded-full",
-                              session.runtime === "codex" ? "bg-emerald-500" : "bg-blue-500"
+                              session.runtime === "codex" ? "bg-emerald-500" : session.runtime === "pi" ? "bg-violet-500" : "bg-blue-500"
                             )} />
                             <span>{getRuntimeLabel(session.runtime)}</span>
                           </span>

@@ -52,18 +52,21 @@ export function ChatView({ sessionId }: ChatViewProps) {
   const messages = timeline.messages;
   const { hasMore } = view;
   const appSettingsQuery = useAppSettingsQuery();
+  const storedDefaultRuntime = appSettingsQuery.data?.settings[SETTING_KEYS.DEFAULT_ASSISTANT_RUNTIME];
   const defaultAssistantRuntime: AssistantRuntime =
-    appSettingsQuery.data?.settings[SETTING_KEYS.DEFAULT_ASSISTANT_RUNTIME] === 'codex'
-      ? 'codex'
+    storedDefaultRuntime === 'codex' || storedDefaultRuntime === 'pi'
+      ? storedDefaultRuntime
       : 'claude_code';
   const currentAssistantRuntime: AssistantRuntime =
     view.sessionAssistantRuntime || defaultAssistantRuntime;
   const currentModel = currentAssistantRuntime === 'codex'
     ? (view.sessionModel || appSettingsQuery.data?.settings[SETTING_KEYS.CODEX_DEFAULT_MODEL] || '')
+    : currentAssistantRuntime === 'pi'
+    ? (view.sessionModel || appSettingsQuery.data?.settings[SETTING_KEYS.PI_DEFAULT_MODEL] || '')
     : (view.sessionModel || appSettingsQuery.data?.settings[SETTING_KEYS.DEFAULT_MODEL] || '');
-  const currentProviderId = currentAssistantRuntime === 'codex'
-    ? ''
-    : (view.sessionProviderId || '');
+  const currentProviderId = currentAssistantRuntime === 'claude_code'
+    ? (view.sessionProviderId || '')
+    : '';
   const mode = view.sessionMode || 'code';
 
   // ── Store actions ──

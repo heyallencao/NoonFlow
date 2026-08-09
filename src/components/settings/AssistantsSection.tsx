@@ -25,6 +25,7 @@ export function AssistantsSection() {
   const [defaultAssistantRuntime, setDefaultAssistantRuntime] = useState<AssistantRuntime>('claude_code');
   const [claudeEnabled, setClaudeEnabled] = useState(true);
   const [codexEnabled, setCodexEnabled] = useState(true);
+  const [piEnabled, setPiEnabled] = useState(true);
   const [codexAuthToken, setCodexAuthToken] = useState('');
   const [codexBaseUrl, setCodexBaseUrl] = useState('');
   const [codexDefaultModel, setCodexDefaultModel] = useState('');
@@ -36,9 +37,11 @@ export function AssistantsSection() {
     const appSettings = appSettingsQuery.data?.settings;
     if (!appSettings || initialized) return;
 
-    setDefaultAssistantRuntime(appSettings[SETTING_KEYS.DEFAULT_ASSISTANT_RUNTIME] === 'codex' ? 'codex' : 'claude_code');
+    const storedRuntime = appSettings[SETTING_KEYS.DEFAULT_ASSISTANT_RUNTIME];
+    setDefaultAssistantRuntime(storedRuntime === 'codex' || storedRuntime === 'pi' ? storedRuntime : 'claude_code');
     setClaudeEnabled(appSettings[SETTING_KEYS.ASSISTANT_RUNTIME_ENABLED_CLAUDE] !== 'false');
     setCodexEnabled(appSettings[SETTING_KEYS.ASSISTANT_RUNTIME_ENABLED_CODEX] !== 'false');
+    setPiEnabled(appSettings[SETTING_KEYS.ASSISTANT_RUNTIME_ENABLED_PI] !== 'false');
     setCodexAuthToken(appSettings[SETTING_KEYS.CODEX_AUTH_TOKEN] || '');
     setCodexBaseUrl(appSettings[SETTING_KEYS.CODEX_BASE_URL] || '');
     setCodexDefaultModel(appSettings[SETTING_KEYS.CODEX_DEFAULT_MODEL] || '');
@@ -57,6 +60,7 @@ export function AssistantsSection() {
             [SETTING_KEYS.DEFAULT_ASSISTANT_RUNTIME]: defaultAssistantRuntime,
             [SETTING_KEYS.ASSISTANT_RUNTIME_ENABLED_CLAUDE]: claudeEnabled ? 'true' : 'false',
             [SETTING_KEYS.ASSISTANT_RUNTIME_ENABLED_CODEX]: codexEnabled ? 'true' : 'false',
+            [SETTING_KEYS.ASSISTANT_RUNTIME_ENABLED_PI]: piEnabled ? 'true' : 'false',
             [SETTING_KEYS.CODEX_AUTH_TOKEN]: codexAuthToken,
             [SETTING_KEYS.CODEX_BASE_URL]: codexBaseUrl,
             [SETTING_KEYS.CODEX_DEFAULT_MODEL]: codexDefaultModel,
@@ -77,6 +81,7 @@ export function AssistantsSection() {
   const runtimeStatusById = new Map((runtimesQuery.data?.runtimes || []).map((runtime) => [runtime.id, runtime]));
   const claudeStatus = runtimeStatusById.get('claude_code');
   const codexStatus = runtimeStatusById.get('codex');
+  const piStatus = runtimeStatusById.get('pi');
 
   return (
     <div className="space-y-12">
@@ -104,6 +109,7 @@ export function AssistantsSection() {
                 <SelectContent>
                   <SelectItem value="claude_code">Claude Code</SelectItem>
                   <SelectItem value="codex">Codex</SelectItem>
+                  <SelectItem value="pi">Pi</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -155,6 +161,23 @@ export function AssistantsSection() {
                   </div>
                 </div>
                 <Switch checked={codexEnabled} onCheckedChange={setCodexEnabled} />
+              </div>
+
+              <div className={cn(
+                "flex items-center justify-between p-4 border-b transition-all rounded-lg",
+                piEnabled ? "border-violet-500/30 bg-violet-500/5" : "border-border/50 opacity-50"
+              )}>
+                <div className="flex items-center gap-3">
+                  <HugeiconsIcon icon={CodeIcon} className={cn("h-5 w-5", piEnabled && "text-violet-500")} />
+                  <div>
+                    <p className="text-[12px] font-semibold">Pi</p>
+                    <p className={cn("text-xs mt-0.5 flex items-center gap-1.5", piStatus?.available ? "text-success" : "text-warning")}>
+                      <span className={cn("h-1.5 w-1.5 rounded-full", piStatus?.available ? "bg-success" : "bg-warning")} />
+                      {piStatus?.status_message || (piStatus?.available ? 'Ready' : 'Unavailable')}
+                    </p>
+                  </div>
+                </div>
+                <Switch checked={piEnabled} onCheckedChange={setPiEnabled} />
               </div>
             </div>
           </div>

@@ -8,10 +8,10 @@ export default function OverviewPage() {
           NoonFlow
         </p>
         <h1 className="mt-3 text-2xl font-semibold tracking-tight text-foreground">
-          Claude Code 与 Codex，本地直接使用
+          Claude Code、Codex 与 Pi，本地直接使用
         </h1>
         <p className="mt-3 text-sm leading-6 text-muted-foreground">
-          从左侧选择一个项目并开始对话。会话历史由 Claude Code 或 Codex 原生保存，NoonFlow 不再创建自己的会话副本。
+          从左侧选择一个项目并开始对话。会话历史由 Claude Code、Codex 或 Pi 原生保存，NoonFlow 不再创建自己的会话副本。
         </p>
         <div className="mt-6 flex items-center gap-3">
           <Link

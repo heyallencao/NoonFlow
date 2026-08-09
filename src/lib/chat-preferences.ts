@@ -42,8 +42,8 @@ export function getStoredChatPreferences(): StoredChatPreferences {
       LAST_PROVIDER_ID_KEY,
       LEGACY_LAST_PROVIDER_ID_KEYS,
     ) || '',
-    assistant_runtime: assistantRuntime === 'codex'
-      ? 'codex'
+    assistant_runtime: assistantRuntime === 'codex' || assistantRuntime === 'pi'
+      ? assistantRuntime
       : assistantRuntime === 'claude_code'
       ? 'claude_code'
       : undefined,
@@ -62,6 +62,10 @@ export function buildCreateSessionPreferencePayload(
 
   if (explicitRuntime === 'codex') {
     return { assistant_runtime: 'codex' };
+  }
+
+  if (explicitRuntime === 'pi') {
+    return { assistant_runtime: 'pi' };
   }
 
   if (explicitRuntime === 'claude_code') {

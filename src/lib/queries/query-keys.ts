@@ -7,6 +7,7 @@ export const queryKeys = {
     ['session-messages', sessionId, limit, beforeRowId ?? null] as const,
   providers: () => ['providers'] as const,
   providerModels: () => ['provider-models'] as const,
+  piModels: () => ['pi-models'] as const,
   assistantRuntimes: () => ['assistant-runtimes'] as const,
   settings: () => ['settings'] as const,
   appSettings: () => ['app-settings'] as const,

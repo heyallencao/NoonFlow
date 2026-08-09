@@ -1,13 +1,13 @@
 import { NextRequest } from 'next/server';
 import fs from 'fs/promises';
-import { createSession, getAllSessions } from '@/lib/db';
+import { createSession, getAllSessions, getSetting } from '@/lib/db';
 import { listNativeSessions } from '@/lib/native-session-catalog';
 import {
   getAssistantRuntimeStatus,
   getDefaultAssistantRuntime,
   getPreferredAvailableAssistantRuntime,
 } from '@/lib/assistant-runtimes';
-import type { CreateSessionRequest, SessionListType, SessionsResponse, SessionResponse } from '@/types';
+import { SETTING_KEYS, type CreateSessionRequest, type SessionListType, type SessionsResponse, type SessionResponse } from '@/types';
 
 function parseCursorParam(rawCursor: string | null): number | undefined {
   if (rawCursor === null || rawCursor.trim() === '') {
@@ -100,8 +100,11 @@ export async function POST(request: NextRequest) {
     let resolvedRuntime = runtimeToUse;
     if (sessionType === 'chat') {
       const runtimeStatus = await getAssistantRuntimeStatus(runtimeToUse);
+      const explicitlyLaunchablePi = isExplicitSelection
+        && runtimeStatus?.id === 'pi'
+        && runtimeStatus.launchable;
 
-      if (!runtimeStatus || !runtimeStatus.available) {
+      if (!runtimeStatus || (!runtimeStatus.available && !explicitlyLaunchablePi)) {
         // If user explicitly selected this runtime, fail immediately
         if (isExplicitSelection) {
           return Response.json(
@@ -130,7 +133,11 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const finalModel = resolvedRuntime === 'claude_code' ? body.model : undefined;
+    const finalModel = resolvedRuntime === 'claude_code'
+      ? body.model
+      : resolvedRuntime === 'pi'
+      ? body.model || getSetting(SETTING_KEYS.PI_DEFAULT_MODEL)
+      : undefined;
     const finalProviderId = resolvedRuntime === 'claude_code' ? body.provider_id : undefined;
 
     if (resolvedRuntime !== runtimeToUse) {

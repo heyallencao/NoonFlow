@@ -16,6 +16,8 @@ export async function GET(
       ? 'codex'
       : runtimeParam === 'claude_code'
       ? 'claude_code'
+      : runtimeParam === 'pi'
+      ? 'pi'
       : undefined;
 
     const session = getReplaySessionDetail(id, runtime);

@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { streamClaude } from '@/lib/claude-client';
 import { streamCodex } from '@/lib/codex-client';
+import { streamPi } from '@/lib/pi-client';
 import { addMessage, createAssistantPlaceholderMessage, deleteMessageRecord, getAssistantMessageByClientMessageId, getMessages, getSession, MessageIdempotencyConflictError, replaceMessageParts, updateSessionTitle, updateSessionMode, updateSessionModel, updateSessionProvider, updateSessionProviderId, updateSessionAssistantRuntime, updateSessionAssistantRuntimeVersion, getSetting, getProvider, getDefaultProviderId, acquireSessionLock, renewSessionLock, releaseSessionLock, syncSdkTasks, upsertAssistantMessage, upsertMessageParts, upsertSessionRuntimeState, getSessionRuntimeState, upsertUserMessage } from '@/lib/db';
 import { sessionStateManager } from '@/lib/session-state-manager';
 import { agentOrchestrator } from '@/lib/agent-runtime/orchestrator';
@@ -275,7 +276,8 @@ export async function POST(request: NextRequest) {
     // Always use the session's saved runtime, ignore any runtime from request body
     const effectiveRuntime: AssistantRuntime = session.assistant_runtime || getDefaultAssistantRuntime();
     const runtimeStatus = await getAssistantRuntimeStatus(effectiveRuntime);
-    if (!runtimeStatus || !runtimeStatus.available) {
+    const canLaunchExistingPiSession = runtimeStatus?.id === 'pi' && runtimeStatus.launchable;
+    if (!runtimeStatus || (!runtimeStatus.available && !canLaunchExistingPiSession)) {
       console.warn('[chat API] assistant runtime unavailable', {
         session_id,
         assistant_runtime: effectiveRuntime,
@@ -456,7 +458,11 @@ export async function POST(request: NextRequest) {
       : session.model || undefined;
     const runtimeDefaultModel = effectiveRuntime === 'codex'
       ? resolvePreferredCodexModel()
-      : getSetting('default_model') || undefined;
+      : effectiveRuntime === 'claude_code'
+      ? getSetting('default_model') || undefined
+      : effectiveRuntime === 'pi'
+      ? getSetting(SETTING_KEYS.PI_DEFAULT_MODEL) || undefined
+      : undefined;
     const effectiveModel = requestedModel || persistedSessionModel || runtimeDefaultModel || undefined;
     const resumeComparableSessionModel = effectiveRuntime === 'codex'
       ? (persistedSessionModel || undefined)
@@ -607,8 +613,13 @@ export async function POST(request: NextRequest) {
 
     const claudeResumeActive = Boolean(session.sdk_session_id)
       && (!effectiveWorkingDirectory || fs.existsSync(effectiveWorkingDirectory));
+    const piResumeActive = effectiveRuntime === 'pi'
+      && Boolean(session.sdk_session_id)
+      && (!effectiveWorkingDirectory || fs.existsSync(effectiveWorkingDirectory));
     const nativeResumeActive = effectiveRuntime === 'codex'
       ? Boolean(codexResumeSessionId)
+      : effectiveRuntime === 'pi'
+      ? piResumeActive
       : claudeResumeActive;
 
     // Load recent conversation history from DB as fallback context.
@@ -634,7 +645,7 @@ export async function POST(request: NextRequest) {
         : WIDGET_SYSTEM_PROMPT;
     }
     const contextBudget = prepareConversationContext({
-      runtime: effectiveRuntime === 'codex' ? 'codex' : 'claude',
+      runtime: effectiveRuntime === 'codex' ? 'codex' : effectiveRuntime === 'pi' ? 'pi' : 'claude',
       prompt: content,
       systemPrompt: finalSystemPrompt,
       conversationHistory: rawHistoryMsgs,
@@ -706,6 +717,26 @@ export async function POST(request: NextRequest) {
           permissionMode,
           files: fileAttachments,
           conversationHistory: historyMsgs,
+          onSessionIdInvalidated: () => {
+            try { sessionStateManager.updateSessionState(session_id, { sdkSessionId: '' }); } catch { /* best effort */ }
+          },
+          onRuntimeStatusChange: (status: string) => {
+            try { sessionStateManager.updateSessionState(session_id, { runtimeStatus: status }); } catch { /* best effort */ }
+          },
+        })
+      : effectiveRuntime === 'pi'
+      ? streamPi({
+          prompt: content,
+          sessionId: session_id,
+          sdkSessionId: piResumeActive ? session.sdk_session_id || undefined : undefined,
+          model: effectiveModel,
+          systemPrompt: finalSystemPrompt,
+          workingDirectory: effectiveWorkingDirectory,
+          abortController,
+          permissionMode,
+          files: fileAttachments,
+          conversationHistory: historyMsgs,
+          fallbackConversationHistory: rawHistoryMsgs,
           onSessionIdInvalidated: () => {
             try { sessionStateManager.updateSessionState(session_id, { sdkSessionId: '' }); } catch { /* best effort */ }
           },

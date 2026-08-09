@@ -5,52 +5,20 @@ import { NextResponse } from 'next/server';
 import {
   findClaudeBinary,
   findCodexBinary,
+  findPiBinary,
   getClaudeVersion,
   getCodexVersion,
+  getPiVersion,
 } from '@/lib/platform';
+import { sanitizeEnvironmentJson, type SanitizedJsonValue } from '@/lib/environment-snapshot';
 
-type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+type JsonValue = SanitizedJsonValue;
 
 interface FileSnapshot<T = JsonValue | string> {
   path: string;
   exists: boolean;
   content: T | null;
   error?: string;
-}
-
-function maskSecretValue(value: string): string {
-  if (value.length <= 8) {
-    return '*'.repeat(Math.max(value.length, 4));
-  }
-  return `${value.slice(0, 4)}***${value.slice(-4)}`;
-}
-
-function sanitizeJson(value: unknown): JsonValue {
-  if (value === null || typeof value === 'boolean' || typeof value === 'number') {
-    return value;
-  }
-
-  if (typeof value === 'string') {
-    return value;
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((item) => sanitizeJson(item));
-  }
-
-  if (typeof value === 'object') {
-    const result: { [key: string]: JsonValue } = {};
-    for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-      if (typeof raw === 'string' && /(token|secret|password|api[_-]?key)/i.test(key)) {
-        result[key] = maskSecretValue(raw);
-      } else {
-        result[key] = sanitizeJson(raw);
-      }
-    }
-    return result;
-  }
-
-  return String(value);
 }
 
 function readJsonFile(filePath: string): FileSnapshot<JsonValue> {
@@ -64,7 +32,7 @@ function readJsonFile(filePath: string): FileSnapshot<JsonValue> {
     return {
       path: filePath,
       exists: true,
-      content: sanitizeJson(parsed),
+      content: sanitizeEnvironmentJson(parsed),
     };
   } catch (error) {
     return {
@@ -108,11 +76,20 @@ export async function GET() {
     const codexConfigPath = path.join(home, '.codex', 'config.toml');
     const codexAuthPath = path.join(home, '.codex', 'auth.json');
     const codexGlobalAgentsMdPath = path.join(home, '.codex', 'AGENTS.md');
+    const piAgentDir = process.env.PI_CODING_AGENT_DIR?.trim()
+      ? process.env.PI_CODING_AGENT_DIR.trim().replace(/^~(?=$|[\\/])/, home)
+      : path.join(home, '.pi', 'agent');
+    const piSettingsPath = path.join(piAgentDir, 'settings.json');
+    const piAuthPath = path.join(piAgentDir, 'auth.json');
+    const piModelsPath = path.join(piAgentDir, 'models.json');
+    const piTrustPath = path.join(piAgentDir, 'trust.json');
+    const piGlobalAgentsMdPath = path.join(piAgentDir, 'AGENTS.md');
 
-    const [claudePath, codexPath] = [findClaudeBinary(), findCodexBinary()];
-    const [claudeVersion, codexVersion] = await Promise.all([
+    const [claudePath, codexPath, piPath] = [findClaudeBinary(), findCodexBinary(), findPiBinary()];
+    const [claudeVersion, codexVersion, piVersion] = await Promise.all([
       claudePath ? getClaudeVersion(claudePath) : Promise.resolve(null),
       codexPath ? getCodexVersion(codexPath) : Promise.resolve(null),
+      piPath ? getPiVersion(piPath) : Promise.resolve(null),
     ]);
     return NextResponse.json({
       runtimes: {
@@ -124,6 +101,10 @@ export async function GET() {
           binaryPath: codexPath || null,
           version: codexVersion,
         },
+        pi: {
+          binaryPath: piPath || null,
+          version: piVersion,
+        },
       },
       files: {
         claudeSettings: readJsonFile(claudeSettingsPath),
@@ -133,6 +114,11 @@ export async function GET() {
         codexConfig: readTextFile(codexConfigPath),
         codexAuth: readJsonFile(codexAuthPath),
         codexGlobalAgentsMd: readTextFile(codexGlobalAgentsMdPath),
+        piSettings: readJsonFile(piSettingsPath),
+        piAuth: readJsonFile(piAuthPath),
+        piModels: readJsonFile(piModelsPath),
+        piTrust: readJsonFile(piTrustPath),
+        piGlobalAgentsMd: readTextFile(piGlobalAgentsMdPath),
       },
     });
   } catch (error) {

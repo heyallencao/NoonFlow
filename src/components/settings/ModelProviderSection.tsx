@@ -22,7 +22,7 @@ import { CLAUDE_AUTH_MODE_KEY, CODEX_AUTH_MODE_KEY, type AssistantAuthMode } fro
 import { publishProviderChanged } from "@/lib/events/app-event-bus";
 import { parseContextWindowOverrides } from "@/lib/default-context-sizes";
 import { useAssistantRuntimesQuery } from "@/lib/queries/assistant-runtime-queries";
-import { useProviderModelsQuery } from "@/lib/queries/provider-queries";
+import { usePiModelsQuery, useProviderModelsQuery } from "@/lib/queries/provider-queries";
 import { queryKeys } from "@/lib/queries/query-keys";
 import { useAppSettingsQuery } from "@/lib/queries/settings-queries";
 import { cn } from "@/lib/utils";
@@ -40,8 +40,8 @@ import {
 import { ProviderForm } from "./ProviderForm";
 import type { ProviderFormData } from "./ProviderForm";
 
-type InstallerTarget = "claude" | "codex";
-type RuntimeCardKey = "claude" | "codex";
+type InstallerTarget = "claude" | "codex" | "pi";
+type RuntimeCardKey = "claude" | "codex" | "pi";
 
 interface InstallPrereqSnapshot {
   hasNode: boolean;
@@ -50,8 +50,12 @@ interface InstallPrereqSnapshot {
   claudeVersion?: string;
   hasCodex: boolean;
   codexVersion?: string;
+  hasPi: boolean;
+  piVersion?: string;
   claudeInitialized: boolean;
   codexInitialized: boolean;
+  piInitialized: boolean;
+  nodeSupportsPi: boolean;
 }
 
 interface FileSnapshot<T = unknown> {
@@ -65,6 +69,7 @@ interface EnvironmentResponse {
   runtimes: {
     claude: { binaryPath: string | null; version: string | null };
     codex: { binaryPath: string | null; version: string | null };
+    pi: { binaryPath: string | null; version: string | null };
   };
   files: {
     claudeSettings: FileSnapshot;
@@ -74,6 +79,11 @@ interface EnvironmentResponse {
     codexConfig: FileSnapshot<string>;
     codexAuth: FileSnapshot;
     codexGlobalAgentsMd: FileSnapshot<string>;
+    piSettings: FileSnapshot;
+    piAuth: FileSnapshot;
+    piModels: FileSnapshot;
+    piTrust: FileSnapshot;
+    piGlobalAgentsMd: FileSnapshot<string>;
   };
 }
 
@@ -123,7 +133,7 @@ function inferAuthMode(
 // ─── Runtime Status Cards ──────────────────────────────────────────────────────
 
 interface RuntimeCard {
-  key: "claude" | "codex";
+  key: RuntimeCardKey;
   label: string;
   icon: typeof CodeIcon;
   version: string | null;
@@ -234,7 +244,7 @@ function RuntimeStatusSection({
                   size="sm"
                   onClick={(e) => {
                     e.stopPropagation();
-                    onInstallClick(runtime.key);
+                    onInstallClick(runtime.key as InstallerTarget);
                   }}
                   className="h-6 text-[10px] gap-1 px-2"
                 >
@@ -267,8 +277,10 @@ function runtimeCardsInner(
   environment: EnvironmentResponse | null,
   claudeStatus: { configured: boolean; available: boolean; status_message?: string } | undefined,
   codexStatus: { configured: boolean; available: boolean; status_message?: string } | undefined,
+  piStatus: { configured: boolean; launchable: boolean; available: boolean; installed: boolean; version?: string; status_message?: string } | undefined,
   claudeEnabled: boolean,
   codexEnabled: boolean,
+  piEnabled: boolean,
 ) {
   return [
     {
@@ -295,6 +307,18 @@ function runtimeCardsInner(
       enabled: codexEnabled,
       statusMessage: codexStatus?.status_message,
     },
+    {
+      key: "pi" as const,
+      label: "Pi",
+      icon: CodeIcon,
+      version: prereq?.piVersion ?? environment?.runtimes.pi.version ?? piStatus?.version ?? null,
+      installed: prereq?.hasPi ?? Boolean(environment?.runtimes.pi.binaryPath),
+      initialized: prereq?.piInitialized ?? Boolean(piStatus?.configured),
+      configured: piStatus?.configured ?? false,
+      available: piStatus?.available ?? false,
+      enabled: piEnabled,
+      statusMessage: piStatus?.status_message,
+    },
   ];
 }
 
@@ -310,6 +334,7 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
   const appSettingsQuery = useAppSettingsQuery();
   const runtimesQuery = useAssistantRuntimesQuery(mode === "environment");
   const providerModelsQuery = useProviderModelsQuery();
+  const piModelsQuery = usePiModelsQuery(mode === "environment");
 
   const [providers, setProviders] = useState<ApiProvider[]>([]);
   const [defaultProviderId, setDefaultProviderId] = useState("");
@@ -342,6 +367,8 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
   const [claudeBaseUrl, setClaudeBaseUrl] = useState("");
   const [defaultModel, setDefaultModel] = useState("");
   const [codexEnabled, setCodexEnabled] = useState(true);
+  const [piEnabled, setPiEnabled] = useState(true);
+  const [piDefaultModel, setPiDefaultModel] = useState("");
   const [codexAuthMode, setCodexAuthMode] = useState<AssistantAuthMode>("login");
   const [codexAuthToken, setCodexAuthToken] = useState("");
   const [codexBaseUrl, setCodexBaseUrl] = useState("");
@@ -387,8 +414,12 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
         claudeVersion: data.claudeVersion,
         hasCodex: data.hasCodex,
         codexVersion: data.codexVersion,
+        hasPi: data.hasPi,
+        piVersion: data.piVersion,
         claudeInitialized: data.claudeInitialized,
         codexInitialized: data.codexInitialized,
+        piInitialized: data.piInitialized,
+        nodeSupportsPi: data.nodeSupportsPi,
       });
     } catch {
       // best effort
@@ -420,7 +451,8 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
   useEffect(() => {
     const appSettings = appSettingsQuery.data?.settings;
     if (!appSettings) return;
-    setDefaultAssistantRuntime(appSettings[SETTING_KEYS.DEFAULT_ASSISTANT_RUNTIME] === "codex" ? "codex" : "claude_code");
+    const storedRuntime = appSettings[SETTING_KEYS.DEFAULT_ASSISTANT_RUNTIME];
+    setDefaultAssistantRuntime(storedRuntime === "codex" || storedRuntime === "pi" ? storedRuntime : "claude_code");
     setClaudeEnabled(appSettings[SETTING_KEYS.ASSISTANT_RUNTIME_ENABLED_CLAUDE] !== "false");
     setClaudeAuthMode(
       inferAuthMode(
@@ -433,6 +465,8 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
     setClaudeBaseUrl(appSettings.anthropic_base_url || "");
     setDefaultModel(appSettings[SETTING_KEYS.DEFAULT_MODEL] || "");
     setCodexEnabled(appSettings[SETTING_KEYS.ASSISTANT_RUNTIME_ENABLED_CODEX] !== "false");
+    setPiEnabled(appSettings[SETTING_KEYS.ASSISTANT_RUNTIME_ENABLED_PI] !== "false");
+    setPiDefaultModel(appSettings[SETTING_KEYS.PI_DEFAULT_MODEL] || "");
     setCodexAuthMode(
       inferAuthMode(
         appSettings[CODEX_AUTH_MODE_KEY],
@@ -454,6 +488,12 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
     }, 1800);
     return () => window.clearTimeout(timer);
   }, [runtimeFeedback.state]);
+
+  useEffect(() => {
+    if (!piDefaultModel && piModelsQuery.data?.default_model) {
+      setPiDefaultModel(piModelsQuery.data.default_model);
+    }
+  }, [piDefaultModel, piModelsQuery.data?.default_model]);
 
   const sortedProviders = useMemo(
     () => [...providers].sort((a, b) => a.sort_order - b.sort_order || a.created_at.localeCompare(b.created_at)),
@@ -481,6 +521,7 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
   const envKeyEntries = Object.entries(envDetected);
   const claudeStatus = runtimesQuery.data?.runtimes.find((r) => r.id === "claude_code");
   const codexStatus = runtimesQuery.data?.runtimes.find((r) => r.id === "codex");
+  const piStatus = runtimesQuery.data?.runtimes.find((r) => r.id === "pi");
 
   const runtimeCards = useMemo(
     () =>
@@ -489,10 +530,12 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
         environment,
         claudeStatus,
         codexStatus,
+        piStatus,
         claudeEnabled,
         codexEnabled,
+        piEnabled,
       ),
-    [prereq, environment, claudeStatus, codexStatus, claudeEnabled, codexEnabled],
+    [prereq, environment, claudeStatus, codexStatus, piStatus, claudeEnabled, codexEnabled, piEnabled],
   );
   const claudeLoginDetected = Boolean(
     environment?.files.claudeCredentials.exists
@@ -519,7 +562,8 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
   const domesticPresets = nonMediaPresets.filter((preset) => domesticPresetKeys.has(preset.key));
   const globalPresets = nonMediaPresets.filter((preset) => !domesticPresetKeys.has(preset.key));
   const visibleError = error || (mode === "environment" ? environmentError : null);
-  const enabledRuntimeCount = [claudeEnabled, codexEnabled].filter(Boolean).length;
+  const enabledRuntimeCount = [claudeEnabled, codexEnabled, piEnabled].filter(Boolean).length;
+  const piRuntimeCard = runtimeCards.find((card) => card.key === "pi");
 
   const refreshAll = useCallback(async () => {
     await Promise.all([
@@ -528,8 +572,9 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
       appSettingsQuery.refetch(),
       runtimesQuery.refetch(),
       providerModelsQuery.refetch(),
+      piModelsQuery.refetch(),
     ]);
-  }, [appSettingsQuery, fetchProviders, mode, providerModelsQuery, refreshEnvironment, runtimesQuery]);
+  }, [appSettingsQuery, fetchProviders, mode, piModelsQuery, providerModelsQuery, refreshEnvironment, runtimesQuery]);
 
   const handleEditSave = useCallback(
     async (data: ProviderFormData) => {
@@ -659,6 +704,8 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
             [SETTING_KEYS.DEFAULT_ASSISTANT_RUNTIME]: defaultAssistantRuntime,
             [SETTING_KEYS.ASSISTANT_RUNTIME_ENABLED_CLAUDE]: claudeEnabled ? "true" : "false",
             [SETTING_KEYS.ASSISTANT_RUNTIME_ENABLED_CODEX]: codexEnabled ? "true" : "false",
+            [SETTING_KEYS.ASSISTANT_RUNTIME_ENABLED_PI]: piEnabled ? "true" : "false",
+            [SETTING_KEYS.PI_DEFAULT_MODEL]: piDefaultModel,
             [CODEX_AUTH_MODE_KEY]: codexAuthMode,
             [SETTING_KEYS.CODEX_AUTH_TOKEN]: codexAuthMode === "api_key" ? codexAuthToken : "",
             [SETTING_KEYS.CODEX_BASE_URL]: codexAuthMode === "api_key" ? codexBaseUrl : "",
@@ -673,7 +720,7 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
         throw new Error(errData.error || (isZh ? "保存失败" : "Failed to save"));
       }
       setRuntimeFeedback({ state: "success", message: isZh ? "已保存。" : "Saved." });
-      await Promise.all([appSettingsQuery.refetch(), runtimesQuery.refetch(), providerModelsQuery.refetch()]);
+      await Promise.all([appSettingsQuery.refetch(), runtimesQuery.refetch(), providerModelsQuery.refetch(), piModelsQuery.refetch()]);
     } catch (err) {
       setRuntimeFeedback({
         state: "error",
@@ -694,11 +741,14 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
     codexDefaultModel,
     codexEnabled,
     codexExtraEnv,
+    piEnabled,
+    piDefaultModel,
     defaultAssistantRuntime,
     defaultModel,
     contextWindowOverrides,
     isZh,
     providerModelsQuery,
+    piModelsQuery,
     runtimesQuery,
   ]);
 
@@ -742,10 +792,10 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
         {mode === "environment" ? (
           <div className="flex flex-wrap gap-2">
             <Badge variant="outline" className="rounded-full text-xs">
-              {isZh ? `默认引擎 ${defaultAssistantRuntime === "codex" ? "Codex" : "Claude"}` : `Default ${defaultAssistantRuntime === "codex" ? "Codex" : "Claude"}`}
+              {isZh ? `默认引擎 ${defaultAssistantRuntime === "codex" ? "Codex" : defaultAssistantRuntime === "pi" ? "Pi" : "Claude"}` : `Default ${defaultAssistantRuntime === "codex" ? "Codex" : defaultAssistantRuntime === "pi" ? "Pi" : "Claude"}`}
             </Badge>
             <Badge variant="outline" className="rounded-full text-xs">
-              {isZh ? `已启用运行时 ${enabledRuntimeCount}/2` : `${enabledRuntimeCount}/2 runtimes enabled`}
+              {isZh ? `已启用运行时 ${enabledRuntimeCount}/3` : `${enabledRuntimeCount}/3 runtimes enabled`}
             </Badge>
             <Badge variant="outline" className="rounded-full text-xs">
               {isZh ? `候选模型 ${allSuggestedModels.length}` : `${allSuggestedModels.length} suggested models`}
@@ -774,8 +824,8 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
               </p>
               <p className="mt-1 text-sm text-muted-foreground">
                 {isZh
-                  ? "首次打开时先准备好 Claude Code 和 Codex，其他细节先不展开。"
-                  : "Set up Claude Code and Codex first."}
+                  ? "首次打开时先准备好 Claude Code、Codex 或 Pi，其他细节先不展开。"
+                  : "Set up Claude Code, Codex, or Pi first."}
               </p>
             </div>
             <Button
@@ -808,8 +858,8 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
 
           <div className="rounded-xl border border-border-subtle bg-background/60 px-4 py-3 text-[11px] text-muted-foreground">
             {isZh
-              ? "Claude 和 Codex 保留 CLI 登录 / API 模式切换。"
-              : "Claude and Codex keep the CLI login and API mode switch."}
+              ? "Claude 和 Codex 保留应用内认证切换；Pi 沿用 ~/.pi/agent/auth.json 或受支持的环境变量。"
+              : "Claude and Codex keep in-app auth controls; Pi uses ~/.pi/agent/auth.json or supported environment variables."}
           </div>
 
           <div className="rounded-xl border border-border-subtle bg-background/60 p-4 space-y-3">
@@ -1008,6 +1058,18 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
                 >
                   Codex
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setDefaultAssistantRuntime("pi")}
+                  className={cn(
+                    "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                    defaultAssistantRuntime === "pi"
+                      ? "border-primary/30 bg-primary/10 text-primary"
+                      : "border-border-subtle bg-background text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  Pi
+                </button>
               </div>
             </div>
 
@@ -1109,6 +1171,116 @@ export function ModelProviderSection({ mode = "providers" }: { mode?: ModelProvi
               </div>
             </div>
           </div>
+
+        <div className="rounded-xl border border-border-subtle bg-background/60 p-4">
+          <div className="space-y-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <HugeiconsIcon icon={CodeIcon} className="h-4 w-4 text-violet-500" />
+                  <p className="text-sm font-semibold text-foreground">Pi</p>
+                  <Badge variant="outline" className="rounded-full text-[10px]">
+                    {piRuntimeCard?.available
+                      ? (isZh ? "可用" : "Ready")
+                      : piRuntimeCard?.statusMessage || (isZh ? "未检测" : "Not detected")}
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {isZh
+                    ? "使用 Pi 原生 RPC、模型目录和会话文件；NoonFlow 可保存 provider/model 默认值。"
+                    : "Uses Pi's native RPC, model catalog, and session files; NoonFlow can save a provider/model default."}
+                </p>
+              </div>
+              <Switch checked={piEnabled} onCheckedChange={setPiEnabled} />
+            </div>
+
+            <div className="rounded-xl border border-border-subtle bg-background/70 p-3 text-[11px] text-muted-foreground">
+              <p>
+                {isZh ? "安装：" : "Install: "}
+                <code className="select-all text-foreground">npm install -g --ignore-scripts @earendil-works/pi-coding-agent</code>
+              </p>
+              <p className="mt-1">
+                {isZh
+                  ? "安装后运行 `pi`，再用 `/login` 配置认证；也可使用 Pi 支持的 API Key 环境变量。"
+                  : "After installation, run `pi`, then use `/login` to configure authentication; Pi-supported API-key environment variables also work."}
+              </p>
+              <p className="mt-1">
+                {isZh
+                  ? "项目内扩展、Skills 和 AGENTS.md 仅在 Pi 已信任该项目时加载；写文件和 shell 工具受 NoonFlow 的危险权限开关控制。"
+                  : "Project extensions, skills, and AGENTS.md load only after Pi trusts the project; write and shell tools follow NoonFlow's dangerous-permissions toggle."}
+              </p>
+            </div>
+
+            {hasNativeInstallBridge && (
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setInstallTarget("pi");
+                    setInstallWizardOpen(true);
+                  }}
+                  className="h-8 text-xs"
+                >
+                  <HugeiconsIcon icon={piRuntimeCard?.installed ? RefreshIcon : Download04Icon} className="h-3 w-3" />
+                  {piRuntimeCard?.installed
+                    ? (isZh ? "初始化或更新 Pi" : "Initialize or update Pi")
+                    : (isZh ? "安装 Pi" : "Install Pi")}
+                </Button>
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                {isZh ? "默认模型（provider/model）" : "Default model (provider/model)"}
+              </label>
+              <select
+                value={piDefaultModel}
+                onChange={(event) => setPiDefaultModel(event.target.value)}
+                className="h-8 w-full rounded-md border border-input bg-background px-3 text-xs"
+              >
+                <option value="">{isZh ? "跟随 Pi 原生设置" : "Use Pi native setting"}</option>
+                {piModelsQuery.data?.models.map((model) => (
+                  <option key={`${model.provider}/${model.id}`} value={`${model.provider}/${model.id}`}>
+                    {model.provider}/{model.id}{model.reasoning ? " · reasoning" : ""}{model.images ? " · images" : ""}
+                  </option>
+                ))}
+              </select>
+              {piModelsQuery.data?.error && (
+                <p className="text-[11px] text-amber-600 dark:text-amber-400">{piModelsQuery.data.error}</p>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-[11px] text-muted-foreground">
+                {defaultAssistantRuntime === "pi"
+                  ? (isZh ? "当前默认运行时" : "Current default runtime")
+                  : (isZh ? "新建会话时可直接选择 Pi" : "Pi can be selected directly when creating a session")}
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setDefaultAssistantRuntime("pi")}
+                  className="h-8 rounded-full text-xs"
+                >
+                  {isZh ? "设为默认" : "Set as default"}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void saveRuntimeSettings()}
+                  disabled={runtimeSaving}
+                  className="h-8 rounded-full text-xs"
+                >
+                  {isZh ? "保存运行时" : "Save runtime"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
         </div>
         )}
 

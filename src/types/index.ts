@@ -26,7 +26,7 @@ export interface ChatSession {
   assistant_runtime_version: string;
 }
 
-export type AssistantRuntime = 'claude_code' | 'codex';
+export type AssistantRuntime = 'claude_code' | 'codex' | 'pi';
 
 export type SessionType = 'chat' | 'terminal';
 
@@ -145,6 +145,17 @@ export interface ProviderModelGroup {
   models: Array<{ value: string; label: string }>;
 }
 
+export interface PiModelOption {
+  provider: string;
+  id: string;
+  value: string;
+  label: string;
+  contextWindow: number | null;
+  maxOutputTokens: number | null;
+  reasoning: boolean;
+  images: boolean;
+}
+
 export interface CreateProviderRequest {
   name: string;
   provider_type?: string;
@@ -219,11 +230,15 @@ export interface AssistantRuntimeStatus {
   id: AssistantRuntime;
   label: string;
   enabled: boolean;
+  /** The runtime process can be started, even if cwd-scoped configuration still needs to resolve. */
+  launchable: boolean;
+  /** The runtime has enough globally visible configuration to be advertised or selected as ready. */
   available: boolean;
   installed: boolean;
   configured: boolean;
   supports_plan_mode: boolean;
   supports_permissions: boolean;
+  version?: string;
   status_message?: string;
 }
 
@@ -511,10 +526,12 @@ export const SETTING_KEYS = {
   DEFAULT_ASSISTANT_RUNTIME: 'default_assistant_runtime',
   ASSISTANT_RUNTIME_ENABLED_CLAUDE: 'assistant_runtime_enabled_claude_code',
   ASSISTANT_RUNTIME_ENABLED_CODEX: 'assistant_runtime_enabled_codex',
+  ASSISTANT_RUNTIME_ENABLED_PI: 'assistant_runtime_enabled_pi',
   CODEX_AUTH_TOKEN: 'codex_auth_token',
   CODEX_BASE_URL: 'codex_base_url',
   CODEX_DEFAULT_MODEL: 'codex_default_model',
   CODEX_EXTRA_ENV: 'codex_extra_env',
+  PI_DEFAULT_MODEL: 'pi_default_model',
   OVERVIEW_RECOMMENDATION_RULES: 'dashboard_recommendation_rules',
   CONTEXT_WINDOW_OVERRIDES: 'context_window_overrides',
   CONTEXT_USAGE_BAR_ENABLED: 'context_usage_bar_enabled',
@@ -787,4 +804,20 @@ export interface ClaudeStreamOptions {
   conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
   onRuntimeStatusChange?: (status: string) => void;
   onContextBudgetRecovery?: (metrics: ContextBudgetRecoveryMetrics) => void | Promise<void>;
+}
+
+export interface PiStreamOptions {
+  prompt: string;
+  sessionId: string;
+  sdkSessionId?: string;
+  model?: string;
+  systemPrompt?: string;
+  workingDirectory?: string;
+  abortController?: AbortController;
+  permissionMode?: string;
+  files?: FileAttachment[];
+  conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  fallbackConversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  onSessionIdInvalidated?: () => void;
+  onRuntimeStatusChange?: (status: string) => void;
 }

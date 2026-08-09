@@ -7,13 +7,14 @@ import { Search01Icon } from "@hugeicons/core-free-icons";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/hooks/useTranslation";
 
-export type RuntimeFilter = "all" | "claude" | "codex";
+export type RuntimeFilter = "all" | "claude" | "codex" | "pi";
 
 interface AutomationToolbarProps {
   searchQuery: string;
   onSearchChange: (query: string) => void;
   runtimeFilter: RuntimeFilter;
   onRuntimeFilterChange: (filter: RuntimeFilter) => void;
+  runtimeOptions?: readonly RuntimeFilter[];
   extraFilters?: ReactNode;
 }
 
@@ -22,6 +23,7 @@ export function AutomationToolbar({
   onSearchChange,
   runtimeFilter,
   onRuntimeFilterChange,
+  runtimeOptions = ["all", "claude", "codex"],
   extraFilters,
 }: AutomationToolbarProps) {
   const { t } = useTranslation();
@@ -39,7 +41,7 @@ export function AutomationToolbar({
       </div>
 
       <div className="flex items-center rounded-lg border border-border-subtle bg-bg-primary p-1 shadow-sm">
-        {(["all", "claude", "codex"] as const).map(rt => (
+        {runtimeOptions.map(rt => (
           <button
             key={rt}
             onClick={() => onRuntimeFilterChange(rt)}
@@ -54,7 +56,9 @@ export function AutomationToolbar({
               ? t("automation.runtime.all")
               : rt === "claude"
                 ? t("automation.runtime.claude")
-                : t("automation.runtime.codex")}
+                : rt === "codex"
+                  ? t("automation.runtime.codex")
+                  : "Pi"}
           </button>
         ))}
       </div>

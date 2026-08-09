@@ -44,8 +44,11 @@ const electronAPI = {
       includeNode?: boolean;
       installClaude?: boolean;
       installCodex?: boolean;
+      installPi?: boolean;
       initializeClaude?: boolean;
       initializeCodex?: boolean;
+      initializePi?: boolean;
+      upgradeExisting?: boolean;
     }) => ipcRenderer.invoke("install:start", options),
     cancel: () => ipcRenderer.invoke("install:cancel"),
     getLogs: () => ipcRenderer.invoke("install:get-logs"),

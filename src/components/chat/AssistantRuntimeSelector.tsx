@@ -43,18 +43,19 @@ export function AssistantRuntimeSelector({
           {visibleRuntimes.map((runtime) => {
             const isActive = runtime.id === value;
             const isSwitching = switchingRuntime === runtime.id;
+            const canSelect = runtime.available || runtime.launchable;
             return (
               <button
                 key={runtime.id}
                 type="button"
-                disabled={disabled || isSwitching || (!runtime.available && !isActive)}
+                disabled={disabled || isSwitching || (!canSelect && !isActive)}
                 onClick={() => onChange(runtime.id)}
                 className={cn(
                   'inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-colors',
                   isActive
                     ? 'border-foreground/20 bg-foreground text-background'
                     : 'border-border bg-background text-foreground hover:bg-accent hover:text-accent-foreground',
-                  (disabled || isSwitching || (!runtime.available && !isActive)) && 'cursor-not-allowed opacity-60',
+                  (disabled || isSwitching || (!canSelect && !isActive)) && 'cursor-not-allowed opacity-60',
                 )}
               >
                 <span

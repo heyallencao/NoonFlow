@@ -7,7 +7,7 @@ export async function POST(request: Request) {
     const { skill, global: isGlobal, runtime = "claude-code" } = body as {
       skill: string;
       global?: boolean;
-      runtime?: "claude-code" | "codex";
+      runtime?: "claude-code" | "codex" | "pi";
     };
 
     if (!skill || typeof skill !== "string") {
@@ -17,7 +17,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const validRuntimes = ["claude-code", "codex"];
+    const validRuntimes = ["claude-code", "codex", "pi"];
     if (!validRuntimes.includes(runtime)) {
       return NextResponse.json(
         { error: `Invalid runtime: ${runtime}. Must be one of: ${validRuntimes.join(", ")}` },
@@ -25,7 +25,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const args = ["remove", skill, "-y", "--agent", runtime];
+    const args = ["remove", skill, "-y", "--agent", runtime === "pi" ? "codex" : runtime];
     if (isGlobal !== false) {
       args.splice(3, 0, "-g");
     }

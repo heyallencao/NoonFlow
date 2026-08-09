@@ -154,6 +154,28 @@ describe('assistant runtime settings route', () => {
     assert.equal(json.settings.claude_auth_mode, 'login');
     assert.equal(json.settings.codex_auth_mode, 'api_key');
   });
+
+  it('persists Pi enablement and provider-scoped default model', async () => {
+    const saveResponse = await putAppSettings(new Request('http://localhost/api/settings/app', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        settings: {
+          assistant_runtime_enabled_pi: 'false',
+          pi_default_model: 'openrouter/anthropic/claude-sonnet-4',
+        },
+      }),
+    }) as never);
+
+    assert.equal(saveResponse.status, 200);
+    assert.equal(getSetting('assistant_runtime_enabled_pi'), 'false');
+    assert.equal(getSetting('pi_default_model'), 'openrouter/anthropic/claude-sonnet-4');
+
+    const response = await getAppSettings();
+    const json = await response.json();
+    assert.equal(json.settings.assistant_runtime_enabled_pi, 'false');
+    assert.equal(json.settings.pi_default_model, 'openrouter/anthropic/claude-sonnet-4');
+  });
 });
 
 describe('/api/chat assistant runtime routing', () => {
@@ -273,6 +295,14 @@ describe('/api/chat assistant runtime routing', () => {
 
   it('preserves Claude model/provider when runtime is not explicitly set and fallback selects Claude', async () => {
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'monolith-claude-fallback-workspace-'));
+    const originalClaudeBinary = assistantRuntimePlatform.findClaudeBinary;
+    const originalClaudeVersion = assistantRuntimePlatform.getClaudeVersion;
+    const originalCodexBinary = assistantRuntimePlatform.findCodexBinary;
+    const originalPiBinary = assistantRuntimePlatform.findPiBinary;
+    assistantRuntimePlatform.findClaudeBinary = () => '/usr/local/bin/claude';
+    assistantRuntimePlatform.getClaudeVersion = async () => 'test';
+    assistantRuntimePlatform.findCodexBinary = () => undefined;
+    assistantRuntimePlatform.findPiBinary = () => undefined;
 
     await putAppSettings(new Request('http://localhost/api/settings/app', {
       method: 'PUT',
@@ -280,28 +310,37 @@ describe('/api/chat assistant runtime routing', () => {
       body: JSON.stringify({
         settings: {
           default_assistant_runtime: 'codex',
-          assistant_runtime_enabled_claude: 'true',
+          claude_auth_mode: 'api_key',
+          assistant_runtime_enabled_claude_code: 'true',
           assistant_runtime_enabled_codex: 'false',
           anthropic_auth_token: 'test-claude-token',
         },
       }),
     }) as never);
 
-    const response = await sessionsPost(new Request('http://localhost/api/chat/sessions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        working_directory: workspaceDir,
-        model: 'sonnet',
-        provider_id: 'env',
-      }),
-    }) as never);
+    try {
+      const response = await sessionsPost(new Request('http://localhost/api/chat/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          working_directory: workspaceDir,
+          model: 'sonnet',
+          provider_id: 'env',
+        }),
+      }) as never);
 
-    assert.equal(response.status, 201);
-    const json = await response.json();
-    assert.equal(json.session.assistant_runtime, 'claude_code');
-    assert.equal(json.session.model, 'sonnet');
-    assert.equal(json.session.provider_id, 'env');
+      assert.equal(response.status, 201);
+      const json = await response.json();
+      assert.equal(json.session.assistant_runtime, 'claude_code');
+      assert.equal(json.session.model, 'sonnet');
+      assert.equal(json.session.provider_id, 'env');
+    } finally {
+      assistantRuntimePlatform.findClaudeBinary = originalClaudeBinary;
+      assistantRuntimePlatform.getClaudeVersion = originalClaudeVersion;
+      assistantRuntimePlatform.findCodexBinary = originalCodexBinary;
+      assistantRuntimePlatform.findPiBinary = originalPiBinary;
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
   });
 
   it('rejects explicit Codex session creation instead of silently falling back', async () => {
@@ -333,6 +372,77 @@ describe('/api/chat assistant runtime routing', () => {
     assert.equal(json.code, 'ASSISTANT_RUNTIME_UNAVAILABLE');
   });
 
+  it('allows an explicit Pi session to resolve cwd-scoped configuration at launch', async () => {
+    const originalPiBinary = assistantRuntimePlatform.findPiBinary;
+    const originalPiModels = assistantRuntimePlatform.listPiModels;
+    const originalPiConfiguration = assistantRuntimePlatform.hasPiConfiguration;
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'noonflow-explicit-pi-workspace-'));
+    assistantRuntimePlatform.findPiBinary = () => '/usr/local/bin/pi';
+    assistantRuntimePlatform.listPiModels = async () => ({ models: [] });
+    assistantRuntimePlatform.hasPiConfiguration = () => false;
+
+    await putAppSettings(new Request('http://localhost/api/settings/app', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: { assistant_runtime_enabled_pi: 'true' } }),
+    }) as never);
+
+    try {
+      const response = await sessionsPost(new Request('http://localhost/api/chat/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ working_directory: workspaceDir, assistant_runtime: 'pi' }),
+      }) as never);
+      assert.equal(response.status, 201);
+      const json = await response.json();
+      assert.equal(json.session.assistant_runtime, 'pi');
+    } finally {
+      assistantRuntimePlatform.findPiBinary = originalPiBinary;
+      assistantRuntimePlatform.listPiModels = originalPiModels;
+      assistantRuntimePlatform.hasPiConfiguration = originalPiConfiguration;
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not auto-select an unconfigured Pi as a ready fallback', async () => {
+    const originalPiBinary = assistantRuntimePlatform.findPiBinary;
+    const originalPiModels = assistantRuntimePlatform.listPiModels;
+    const originalPiConfiguration = assistantRuntimePlatform.hasPiConfiguration;
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'noonflow-pi-fallback-workspace-'));
+    assistantRuntimePlatform.findPiBinary = () => '/usr/local/bin/pi';
+    assistantRuntimePlatform.listPiModels = async () => ({ models: [] });
+    assistantRuntimePlatform.hasPiConfiguration = () => false;
+
+    await putAppSettings(new Request('http://localhost/api/settings/app', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        settings: {
+          default_assistant_runtime: 'pi',
+          assistant_runtime_enabled_pi: 'true',
+          assistant_runtime_enabled_claude_code: 'false',
+          assistant_runtime_enabled_codex: 'false',
+        },
+      }),
+    }) as never);
+
+    try {
+      const response = await sessionsPost(new Request('http://localhost/api/chat/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ working_directory: workspaceDir }),
+      }) as never);
+      assert.equal(response.status, 400);
+      const json = await response.json();
+      assert.equal(json.code, 'ASSISTANT_RUNTIME_UNAVAILABLE');
+    } finally {
+      assistantRuntimePlatform.findPiBinary = originalPiBinary;
+      assistantRuntimePlatform.listPiModels = originalPiModels;
+      assistantRuntimePlatform.hasPiConfiguration = originalPiConfiguration;
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
   it('does not report Claude as available when credentials are missing', async () => {
     const originalClaudeBinary = assistantRuntimePlatform.findClaudeBinary;
     const originalAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
@@ -348,7 +458,7 @@ describe('/api/chat assistant runtime routing', () => {
       body: JSON.stringify({
         settings: {
           claude_auth_mode: 'api_key',
-          assistant_runtime_enabled_claude: 'true',
+          assistant_runtime_enabled_claude_code: 'true',
           anthropic_auth_token: '',
           anthropic_base_url: '',
         },
@@ -440,6 +550,63 @@ describe('/api/chat assistant runtime routing', () => {
       } else {
         process.env.ANTHROPIC_BASE_URL = originalAnthropicBaseUrl;
       }
+    }
+  });
+
+  it('reports Pi as available from its native auth file and local CLI', async () => {
+    const originalPiBinary = assistantRuntimePlatform.findPiBinary;
+    const originalPiAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const piAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'noonflow-pi-agent-'));
+    fs.writeFileSync(path.join(piAgentDir, 'auth.json'), '{"anthropic":{"type":"api_key","key":"test"}}');
+    assistantRuntimePlatform.findPiBinary = () => '/usr/local/bin/pi';
+    process.env.PI_CODING_AGENT_DIR = piAgentDir;
+
+    await putAppSettings(new Request('http://localhost/api/settings/app', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: { assistant_runtime_enabled_pi: 'true' } }),
+    }) as never);
+
+    try {
+      const status = await getAssistantRuntimeStatus('pi');
+      assert.equal(status?.installed, true);
+      assert.equal(status?.configured, true);
+      assert.equal(status?.available, true);
+      assert.equal(status?.supports_plan_mode, true);
+      assert.equal(status?.supports_permissions, false);
+    } finally {
+      assistantRuntimePlatform.findPiBinary = originalPiBinary;
+      if (originalPiAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = originalPiAgentDir;
+      fs.rmSync(piAgentDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps an installed but unconfigured Pi launchable without advertising it as ready', async () => {
+    const originalPiBinary = assistantRuntimePlatform.findPiBinary;
+    const originalPiModels = assistantRuntimePlatform.listPiModels;
+    const originalPiConfiguration = assistantRuntimePlatform.hasPiConfiguration;
+    assistantRuntimePlatform.findPiBinary = () => '/usr/local/bin/pi';
+    assistantRuntimePlatform.listPiModels = async () => ({ models: [] });
+    assistantRuntimePlatform.hasPiConfiguration = () => false;
+
+    await putAppSettings(new Request('http://localhost/api/settings/app', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: { assistant_runtime_enabled_pi: 'true' } }),
+    }) as never);
+
+    try {
+      const status = await getAssistantRuntimeStatus('pi');
+      assert.equal(status?.installed, true);
+      assert.equal(status?.configured, false);
+      assert.equal(status?.launchable, true);
+      assert.equal(status?.available, false);
+      assert.match(status?.status_message || '', /\/login/);
+    } finally {
+      assistantRuntimePlatform.findPiBinary = originalPiBinary;
+      assistantRuntimePlatform.listPiModels = originalPiModels;
+      assistantRuntimePlatform.hasPiConfiguration = originalPiConfiguration;
     }
   });
 });

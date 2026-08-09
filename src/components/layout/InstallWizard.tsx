@@ -23,17 +23,18 @@ import {
   Download04Icon,
 } from "@hugeicons/core-free-icons";
 import { useTranslation } from "@/hooks/useTranslation";
+import { needsNodeInstallation } from "@/lib/install-plan";
 
-type InstallTarget = "claude" | "codex" | "both";
-type RuntimeKey = "claude" | "codex";
+type InstallTarget = "claude" | "codex" | "pi" | "both" | "all";
+type RuntimeKey = "claude" | "codex" | "pi";
 
 interface InstallProgress {
-  status: "idle" | "running" | "success" | "failed" | "cancelled";
+  status: "idle" | "running" | "success" | "needs_setup" | "failed" | "cancelled";
   currentStep: string | null;
   steps: Array<{
     id: string;
     label: string;
-    status: "pending" | "running" | "success" | "failed" | "skipped";
+    status: "pending" | "running" | "success" | "needs_setup" | "failed" | "skipped";
     error?: string;
   }>;
   logs: string[];
@@ -52,6 +53,7 @@ type WizardPhase =
   | "already-installed"
   | "installing"
   | "success"
+  | "needs-setup"
   | "failed";
 
 interface PrereqResult {
@@ -61,8 +63,12 @@ interface PrereqResult {
   claudeVersion?: string;
   hasCodex: boolean;
   codexVersion?: string;
+  hasPi: boolean;
+  piVersion?: string;
   claudeInitialized: boolean;
   codexInitialized: boolean;
+  piInitialized: boolean;
+  nodeSupportsPi: boolean;
   hasHomebrew?: boolean;
   platform?: string;
 }
@@ -80,6 +86,8 @@ function StepIcon({ status }: { status: string }) {
       return <HugeiconsIcon icon={Tick01Icon} className="size-4 text-emerald-500" />;
     case "running":
       return <HugeiconsIcon icon={Loading02Icon} className="size-4 text-blue-500 animate-spin" />;
+    case "needs_setup":
+      return <HugeiconsIcon icon={RecordIcon} className="size-4 text-amber-500" />;
     case "failed":
       return <HugeiconsIcon icon={Cancel01Icon} className="size-4 text-red-500" />;
     case "skipped":
@@ -90,31 +98,40 @@ function StepIcon({ status }: { status: string }) {
 }
 
 function runtimeDisplay(runtime: RuntimeKey): string {
-  return runtime === "claude" ? "Claude Code" : "Codex";
+  return runtime === "claude" ? "Claude Code" : runtime === "codex" ? "Codex" : "Pi";
 }
 
 function runtimeCliDisplay(runtime: RuntimeKey): string {
-  return runtime === "claude" ? "Claude Code CLI" : "Codex CLI";
+  return `${runtimeDisplay(runtime)} CLI`;
 }
 
 function runtimeLoginCommand(runtime: RuntimeKey): string {
-  return runtime === "claude" ? "claude login" : "codex login";
+  return runtime === "claude" ? "claude login" : runtime === "codex" ? "codex login" : "pi → /login";
 }
 
 export function InstallWizard({
   open,
   onOpenChange,
   onInstallComplete,
-  target = "both",
+  target = "all",
 }: InstallWizardProps) {
   const { t } = useTranslation();
   const isZh = t("nav.chats") === "对话";
-  const isSingleTarget = target !== "both";
-  const includeClaude = target === "both" || target === "claude";
-  const includeCodex = target === "both" || target === "codex";
-  const titleTarget = target === "both" ? "Claude + Codex" : runtimeDisplay(target);
+  const isSingleTarget = target !== "both" && target !== "all";
+  const includeClaude = target === "both" || target === "all" || target === "claude";
+  const includeCodex = target === "both" || target === "all" || target === "codex";
+  const includePi = target === "all" || target === "pi";
+  const titleTarget = target === "all"
+    ? "Claude Code + Codex + Pi"
+    : target === "both"
+    ? "Claude Code + Codex"
+    : runtimeDisplay(target);
   const activeRuntimes = useMemo<RuntimeKey[]>(
-    () => (target === "both" ? ["claude", "codex"] : [target]),
+    () => target === "all"
+      ? ["claude", "codex", "pi"]
+      : target === "both"
+      ? ["claude", "codex"]
+      : [target],
     [target],
   );
 
@@ -126,22 +143,28 @@ export function InstallWizard({
   const [prereqs, setPrereqs] = useState<PrereqResult | null>(null);
   const [installClaude, setInstallClaude] = useState(true);
   const [installCodex, setInstallCodex] = useState(true);
+  const [installPi, setInstallPi] = useState(true);
   const [initializeClaude, setInitializeClaude] = useState(true);
   const [initializeCodex, setInitializeCodex] = useState(true);
+  const [initializePi, setInitializePi] = useState(true);
 
   const logEndRef = useRef<HTMLDivElement>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
 
   const isRuntimeInstalled = useCallback((data: PrereqResult, runtime: RuntimeKey) => {
-    return runtime === "claude" ? data.hasClaude : data.hasCodex;
+    return runtime === "claude" ? data.hasClaude : runtime === "codex" ? data.hasCodex : data.hasPi;
   }, []);
 
   const isRuntimeInitialized = useCallback((data: PrereqResult, runtime: RuntimeKey) => {
-    return runtime === "claude" ? data.claudeInitialized : data.codexInitialized;
+    return runtime === "claude"
+      ? data.claudeInitialized
+      : runtime === "codex"
+      ? data.codexInitialized
+      : data.piInitialized;
   }, []);
 
   const runtimeVersion = useCallback((data: PrereqResult, runtime: RuntimeKey) => {
-    return runtime === "claude" ? data.claudeVersion : data.codexVersion;
+    return runtime === "claude" ? data.claudeVersion : runtime === "codex" ? data.codexVersion : data.piVersion;
   }, []);
 
   const scrollToBottom = useCallback(() => {
@@ -166,8 +189,11 @@ export function InstallWizard({
     includeNode?: boolean;
     installClaude?: boolean;
     installCodex?: boolean;
+    installPi?: boolean;
     initializeClaude?: boolean;
     initializeCodex?: boolean;
+    initializePi?: boolean;
+    upgradeExisting?: boolean;
   }) => {
     const api = getInstallAPI();
     if (!api) return;
@@ -181,6 +207,8 @@ export function InstallWizard({
 
       if (p.status === "success") {
         setPhase("success");
+      } else if (p.status === "needs_setup") {
+        setPhase("needs-setup");
       } else if (p.status === "failed" || p.status === "cancelled") {
         setPhase("failed");
       }
@@ -210,8 +238,10 @@ export function InstallWizard({
 
       setInstallClaude(activeRuntimes.includes("claude") ? !result.hasClaude : false);
       setInstallCodex(activeRuntimes.includes("codex") ? !result.hasCodex : false);
+      setInstallPi(activeRuntimes.includes("pi") ? !result.hasPi : false);
       setInitializeClaude(activeRuntimes.includes("claude") ? !result.claudeInitialized : false);
       setInitializeCodex(activeRuntimes.includes("codex") ? !result.codexInitialized : false);
+      setInitializePi(activeRuntimes.includes("pi") ? !result.piInitialized : false);
 
       const nextLogs: string[] = [];
       nextLogs.push(result.hasNode ? `Node.js ${result.nodeVersion} found.` : "Node.js not found.");
@@ -231,7 +261,8 @@ export function InstallWizard({
 
       const allInstalled = activeRuntimes.every((runtime) => isRuntimeInstalled(result, runtime));
       const allInitialized = activeRuntimes.every((runtime) => isRuntimeInitialized(result, runtime));
-      if (allInstalled && allInitialized) {
+      const nodeCompatible = !activeRuntimes.includes("pi") || result.nodeSupportsPi;
+      if (allInstalled && allInitialized && nodeCompatible) {
         setPhase("already-installed");
         return;
       }
@@ -249,24 +280,35 @@ export function InstallWizard({
 
     const canInstallClaude = activeRuntimes.includes("claude") ? installClaude : false;
     const canInstallCodex = activeRuntimes.includes("codex") ? installCodex : false;
+    const canInstallPi = activeRuntimes.includes("pi") ? installPi : false;
     const canInitClaude = activeRuntimes.includes("claude") && initializeClaude && (canInstallClaude || prereqs.hasClaude);
     const canInitCodex = activeRuntimes.includes("codex") && initializeCodex && (canInstallCodex || prereqs.hasCodex);
-    const hasAnyAction = canInstallClaude || canInstallCodex || canInitClaude || canInitCodex;
+    const canInitPi = activeRuntimes.includes("pi") && initializePi && (canInstallPi || prereqs.hasPi);
+    const hasAnyAction = canInstallClaude || canInstallCodex || canInstallPi || canInitClaude || canInitCodex || canInitPi;
 
     if (!hasAnyAction) {
       setLogs((prev) => [...prev, "Select at least one install/init action to continue."]);
       return;
     }
 
-    const needsNode = !prereqs.hasNode && (canInstallClaude || canInstallCodex);
+    const needsNode = needsNodeInstallation({
+      hasNode: prereqs.hasNode,
+      nodeSupportsPi: prereqs.nodeSupportsPi,
+      installClaude: canInstallClaude,
+      installCodex: canInstallCodex,
+      installPi: canInstallPi,
+      initializePi: canInitPi,
+    });
     startInstall({
       includeNode: needsNode,
       installClaude: canInstallClaude,
       installCodex: canInstallCodex,
+      installPi: canInstallPi,
       initializeClaude: canInitClaude,
       initializeCodex: canInitCodex,
+      initializePi: canInitPi,
     });
-  }, [activeRuntimes, initializeClaude, initializeCodex, installClaude, installCodex, prereqs, startInstall]);
+  }, [activeRuntimes, initializeClaude, initializeCodex, initializePi, installClaude, installCodex, installPi, prereqs, startInstall]);
 
   const handleCopyLogs = useCallback(async () => {
     try {
@@ -303,8 +345,10 @@ export function InstallWizard({
       setPrereqs(null);
       setInstallClaude(activeRuntimes.includes("claude"));
       setInstallCodex(activeRuntimes.includes("codex"));
+      setInstallPi(activeRuntimes.includes("pi"));
       setInitializeClaude(activeRuntimes.includes("claude"));
       setInitializeCodex(activeRuntimes.includes("codex"));
+      setInitializePi(activeRuntimes.includes("pi"));
       checkPrereqs();
     }
     return () => {
@@ -316,7 +360,17 @@ export function InstallWizard({
   }, [open, checkPrereqs, activeRuntimes]);
 
   const steps = progress?.steps ?? [];
-  const needsNodeInstall = Boolean(prereqs && !prereqs.hasNode && ((includeClaude && installClaude) || (includeCodex && installCodex)));
+  const needsNodeInstall = Boolean(
+    prereqs
+      && needsNodeInstallation({
+        hasNode: prereqs.hasNode,
+        nodeSupportsPi: prereqs.nodeSupportsPi,
+        installClaude: includeClaude && installClaude,
+        installCodex: includeCodex && installCodex,
+        installPi: includePi && installPi,
+        initializePi: includePi && initializePi,
+      }),
+  );
   const requiresManualPackageManager = Boolean(
     prereqs
       && prereqs.platform === "darwin"
@@ -333,10 +387,14 @@ export function InstallWizard({
             {phase === "confirm"
               ? isSingleTarget
                 ? (isZh ? `准备一键安装并初始化 ${titleTarget} 环境。` : `One-click install and initialize ${titleTarget}.`)
-                : "Configure one-click install and initialization for Claude and Codex."
+                : isZh
+                  ? `配置 ${titleTarget} 的一键安装与初始化。`
+                  : `Configure one-click install and initialization for ${titleTarget}.`
               : isSingleTarget
                 ? (isZh ? `自动安装并初始化 ${titleTarget} 环境` : `Automatically install and initialize ${titleTarget} environment`)
-                : "Automatically install and initialize Claude and Codex environments"}
+                : isZh
+                  ? `自动安装并初始化 ${titleTarget} 环境`
+                  : `Automatically install and initialize ${titleTarget} environments`}
           </DialogDescription>
         </DialogHeader>
 
@@ -351,6 +409,7 @@ export function InstallWizard({
                       step.status === "pending" && "text-muted-foreground",
                       step.status === "running" && "text-foreground font-medium",
                       step.status === "success" && "text-emerald-700 dark:text-emerald-400",
+                      step.status === "needs_setup" && "text-amber-700 dark:text-amber-400",
                       step.status === "failed" && "text-red-700 dark:text-red-400",
                       step.status === "skipped" && "text-muted-foreground",
                     )}
@@ -415,9 +474,13 @@ export function InstallWizard({
           {phase === "confirm" && !requiresManualPackageManager && (
             <div className="space-y-3">
               <div className="rounded-lg bg-amber-500/10 px-4 py-3 text-sm space-y-1.5">
-                {!prereqs?.hasNode && (includeClaude || includeCodex) ? (
+                {!prereqs?.hasNode && (includeClaude || includeCodex || includePi) ? (
                   <p className="text-amber-700 dark:text-amber-400">
                     Node.js — not found (will be installed via {prereqs?.platform === "win32" ? "winget" : "Homebrew"})
+                  </p>
+                ) : includePi && prereqs?.hasNode && !prereqs.nodeSupportsPi ? (
+                  <p className="text-amber-700 dark:text-amber-400">
+                    Node.js {prereqs.nodeVersion} — Pi requires Node.js 22.19.0 or newer (will be upgraded)
                   </p>
                 ) : prereqs?.hasNode ? (
                   <p className="text-emerald-700 dark:text-emerald-400">Node.js {prereqs.nodeVersion} — found</p>
@@ -442,6 +505,17 @@ export function InstallWizard({
                     </p>
                     <p className={prereqs?.codexInitialized ? "text-emerald-700 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400"}>
                       Codex auth — {prereqs?.codexInitialized ? "detected" : "not detected"}
+                    </p>
+                  </>
+                )}
+
+                {activeRuntimes.includes("pi") && (
+                  <>
+                    <p className={prereqs?.hasPi ? "text-emerald-700 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400"}>
+                      Pi CLI — {prereqs?.hasPi ? `installed (${prereqs.piVersion ?? "unknown version"})` : "not found"}
+                    </p>
+                    <p className={prereqs?.piInitialized ? "text-emerald-700 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400"}>
+                      Pi model/auth — {prereqs?.piInitialized ? "detected" : "not detected"}
                     </p>
                   </>
                 )}
@@ -509,6 +583,34 @@ export function InstallWizard({
                       </div>
                     </>
                   )}
+                  {includePi && (
+                    <>
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-medium">Install Pi CLI</p>
+                          <p className="text-xs text-muted-foreground">Requires Node.js 22.19.0 or newer</p>
+                        </div>
+                        <Switch
+                          checked={installPi}
+                          onCheckedChange={(checked) => {
+                            setInstallPi(checked);
+                            if (!checked && !prereqs.hasPi) setInitializePi(false);
+                          }}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-medium">Initialize Pi environment</p>
+                          <p className="text-xs text-muted-foreground">Checks native models/auth and creates ~/.pi/agent</p>
+                        </div>
+                        <Switch
+                          checked={initializePi}
+                          disabled={!installPi && !prereqs.hasPi}
+                          onCheckedChange={setInitializePi}
+                        />
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
 
@@ -523,16 +625,33 @@ export function InstallWizard({
           )}
 
           {phase === "already-installed" && (
-            <div className="flex items-center gap-3 rounded-lg bg-emerald-500/10 px-4 py-3">
-              <HugeiconsIcon icon={Tick01Icon} className="size-5 text-emerald-500 shrink-0" />
-              <div className="text-sm">
-                <p className="font-medium text-emerald-700 dark:text-emerald-400">Already installed</p>
-                <p className="text-muted-foreground text-xs">
-                  {isZh
-                    ? `${titleTarget} 已安装并完成初始化`
-                    : `${titleTarget} is already installed and initialized.`}
-                </p>
+            <div className="flex items-center justify-between gap-3 rounded-lg bg-emerald-500/10 px-4 py-3">
+              <div className="flex items-center gap-3">
+                <HugeiconsIcon icon={Tick01Icon} className="size-5 text-emerald-500 shrink-0" />
+                <div className="text-sm">
+                  <p className="font-medium text-emerald-700 dark:text-emerald-400">Already installed</p>
+                  <p className="text-muted-foreground text-xs">
+                    {isZh
+                      ? `${titleTarget} 已安装并完成初始化`
+                      : `${titleTarget} is already installed and initialized.`}
+                  </p>
+                </div>
               </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => startInstall({
+                  installClaude: includeClaude,
+                  installCodex: includeCodex,
+                  installPi: includePi,
+                  initializeClaude: false,
+                  initializeCodex: false,
+                  initializePi: false,
+                  upgradeExisting: true,
+                })}
+              >
+                {isZh ? "更新到最新版" : "Update latest"}
+              </Button>
             </div>
           )}
 
@@ -547,6 +666,22 @@ export function InstallWizard({
                       ? `${titleTarget} 已安装并初始化完成。`
                       : `${titleTarget} was installed and initialized successfully.`)
                     : "Selected runtimes were installed and initialized successfully."}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {phase === "needs-setup" && (
+            <div className="flex items-start gap-3 rounded-lg bg-amber-500/10 px-4 py-3">
+              <HugeiconsIcon icon={RecordIcon} className="mt-0.5 size-5 shrink-0 text-amber-500" />
+              <div className="text-sm">
+                <p className="font-medium text-amber-700 dark:text-amber-400">
+                  {isZh ? "已安装，还需要完成认证" : "Installed — authentication still required"}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {isZh
+                    ? "请按日志中的登录指引完成至少一个运行时的认证，然后刷新状态。"
+                    : "Follow the login guidance in the logs, then refresh runtime status."}
                 </p>
               </div>
             </div>
@@ -592,7 +727,7 @@ export function InstallWizard({
             <Button size="sm" onClick={checkPrereqs}>{t("install.retry")}</Button>
           )}
 
-          {(phase === "success" || phase === "already-installed") && (
+          {(phase === "success" || phase === "needs-setup" || phase === "already-installed") && (
             <Button size="sm" onClick={handleDone}>{t("install.done")}</Button>
           )}
         </DialogFooter>

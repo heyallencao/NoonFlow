@@ -53,7 +53,7 @@ export function SkillsManager() {
   // Filters
   const [searchQuery, setSearchQuery] = useState("");
   const [runtimeFilter, setRuntimeFilter] = useState<RuntimeFilter>("all");
-  const [sourceFilter, setSourceFilter] = useState<"all" | "global" | "installed" | "plugin">("all");
+  const [sourceFilter, setSourceFilter] = useState<"all" | "global" | "project" | "installed" | "plugin">("all");
 
   const fetchSkills = useCallback(async () => {
     try {
@@ -61,7 +61,7 @@ export function SkillsManager() {
       const res = await fetch(`/api/skills${cwdParam}`);
       if (res.ok) {
         const data = await res.json();
-        setSkills((data.skills || []).filter((skill: SkillItem) => skill.source !== "project"));
+        setSkills(data.skills || []);
       }
     } catch {
     } finally {
@@ -74,11 +74,11 @@ export function SkillsManager() {
   }, [fetchSkills]);
 
   const handleCreate = useCallback(
-    async (name: string, scope: "global" | "project", content: string) => {
+    async (name: string, scope: "global" | "project", runtime: "claude" | "codex" | "pi", content: string) => {
       const res = await fetch("/api/skills", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, content, scope, cwd: workingDirectory || undefined }),
+        body: JSON.stringify({ name, content, scope, runtime, cwd: workingDirectory || undefined }),
       });
       if (!res.ok) {
         const data = await res.json();
@@ -96,6 +96,12 @@ export function SkillsManager() {
       const params = new URLSearchParams();
       if (skill.source === "installed" && skill.installedSource) {
         params.set("source", skill.installedSource);
+      }
+      if (skill.skillTarget) {
+        params.set("target", skill.skillTarget);
+      }
+      if (skill.source === "global" || skill.source === "project") {
+        params.set("scope", skill.source);
       }
       if (workingDirectory) {
         params.set("cwd", workingDirectory);
@@ -174,15 +180,17 @@ export function SkillsManager() {
             : skill.source === "plugin"
               ? ["codex"]
               : skill.source === "installed"
-                ? [skill.installedSource === "agents" ? "codex" : "claude"]
+                ? [skill.installedSource === "agents" ? "codex" : "claude", ...(skill.installedSource === "agents" ? ["pi" as const] : [])]
                 : []
         );
 
       const isClaudeCode = runtimeAvailability.includes("claude");
       const isCodex = runtimeAvailability.includes("codex");
+      const isPi = runtimeAvailability.includes("pi");
       
       if (runtimeFilter === "claude" && !isClaudeCode) return false;
       if (runtimeFilter === "codex" && !isCodex) return false;
+      if (runtimeFilter === "pi" && !isPi) return false;
 
       if (sourceFilter !== "all" && skill.source !== sourceFilter) return false;
 
@@ -214,7 +222,7 @@ export function SkillsManager() {
 
   const extraFilters = (
     <div className="flex items-center">
-      {(["all", "global", "installed", "plugin"] as const).map(src => (
+      {(["all", "global", "project", "installed", "plugin"] as const).map(src => (
         <button
           key={src}
           onClick={() => setSourceFilter(src)}
@@ -230,6 +238,7 @@ export function SkillsManager() {
   );
 
   const globalSkills = filteredSkills.filter((skill) => skill.source === "global");
+  const projectSkills = filteredSkills.filter((skill) => skill.source === "project");
   const installedSkills = filteredSkills.filter((skill) => skill.source === "installed");
   const pluginSkills = filteredSkills.filter((skill) => skill.source === "plugin");
 
@@ -280,6 +289,7 @@ export function SkillsManager() {
         onSearchChange={setSearchQuery}
         runtimeFilter={runtimeFilter}
         onRuntimeFilterChange={setRuntimeFilter}
+        runtimeOptions={["all", "claude", "codex", "pi"]}
         extraFilters={extraFilters}
       />
 
@@ -344,6 +354,29 @@ export function SkillsManager() {
               </div>
             )}
 
+            {projectSkills.length > 0 && (
+              <div>
+                <div className="mb-4 flex items-center gap-2">
+                  <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-blue-500/10 text-blue-500">
+                    <HugeiconsIcon icon={FolderOpenIcon} className="h-4 w-4" />
+                  </div>
+                  <h2 className="text-[15px] font-bold text-foreground">Project</h2>
+                  <span className="rounded-md bg-muted/20 px-1.5 py-0.5 text-xs text-muted-foreground/60">{projectSkills.length}</span>
+                </div>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-3">
+                  {projectSkills.map((skill) => (
+                    <SkillListItem
+                      key={getSkillItemKey(skill)}
+                      skill={skill}
+                      selected={false}
+                      onSelect={() => setSelected(skill)}
+                      onDelete={handleDelete}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
             {pluginSkills.length > 0 && (
               <div>
                 <div className="mb-4 flex items-center gap-2">
@@ -372,7 +405,12 @@ export function SkillsManager() {
         )}
       </div>
 
-      <CreateSkillDialog open={showCreate} onOpenChange={setShowCreate} onCreate={handleCreate} />
+      <CreateSkillDialog
+        open={showCreate}
+        onOpenChange={setShowCreate}
+        onCreate={handleCreate}
+        projectAvailable={Boolean(workingDirectory)}
+      />
       <SearchSkillsDialog
         open={showSearch}
         onOpenChange={setShowSearch}

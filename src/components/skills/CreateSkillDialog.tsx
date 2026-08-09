@@ -20,11 +20,12 @@ import { useTranslation } from "@/hooks/useTranslation";
 interface CreateSkillDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreate: (name: string, scope: "global" | "project", content: string) => Promise<void>;
+  onCreate: (name: string, scope: "global" | "project", runtime: "claude" | "codex" | "pi", content: string) => Promise<void>;
+  projectAvailable?: boolean;
 }
 
 const DEFAULT_TEMPLATE = `---
-description: What this skill teaches Claude to do
+description: What this skill teaches an agent to do
 ---
 # Skill Name
 
@@ -37,12 +38,14 @@ export function CreateSkillDialog({
   open,
   onOpenChange,
   onCreate,
+  projectAvailable = false,
 }: CreateSkillDialogProps) {
   const { t } = useTranslation();
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
   const [name, setName] = useState("");
   const [scope, setScope] = useState<"global" | "project">("global");
+  const [runtime, setRuntime] = useState<"claude" | "codex" | "pi">("claude");
   const [content, setContent] = useState(DEFAULT_TEMPLATE);
   const [editorVersion, setEditorVersion] = useState(0);
   const [creating, setCreating] = useState(false);
@@ -64,9 +67,10 @@ export function CreateSkillDialog({
     setCreating(true);
     setError("");
     try {
-      await onCreate(trimmed, scope, content);
+      await onCreate(trimmed, scope, runtime, content);
       setName("");
       setScope("global");
+      setRuntime("claude");
       setContent(DEFAULT_TEMPLATE);
       setEditorVersion((current) => current + 1);
       onOpenChange(false);
@@ -133,6 +137,16 @@ export function CreateSkillDialog({
             />
             <div className="h-5 w-px bg-border-subtle" />
             <select
+              value={runtime}
+              onChange={(e) => setRuntime(e.target.value as "claude" | "codex" | "pi")}
+              className="cursor-pointer appearance-none border-none bg-transparent px-3 py-2 text-sm text-foreground outline-none hover:bg-bg-hover focus:ring-0"
+            >
+              <option value="claude" className="bg-bg-secondary">Claude Code</option>
+              <option value="codex" className="bg-bg-secondary">Codex (shared)</option>
+              <option value="pi" className="bg-bg-secondary">Pi (shared)</option>
+            </select>
+            <div className="h-5 w-px bg-border-subtle" />
+            <select
               value={scope}
               onChange={(e) => setScope(e.target.value as "global" | "project")}
               className="cursor-pointer appearance-none border-none bg-transparent px-3 py-2 pr-8 text-sm text-foreground outline-none hover:bg-bg-hover focus:ring-0 transition-colors"
@@ -142,9 +156,15 @@ export function CreateSkillDialog({
               }}
             >
               <option value="global" className="bg-bg-secondary">{t("skills.global")}</option>
-              <option value="project" className="bg-bg-secondary">{t("skills.project")}</option>
+              <option value="project" disabled={!projectAvailable} className="bg-bg-secondary">{t("skills.project")}</option>
             </select>
           </div>
+
+          {(runtime === "codex" || runtime === "pi") && (
+            <p className="px-1 text-xs text-muted-foreground">
+              Codex and Pi share the same <code>.agents/skills/&lt;name&gt;/SKILL.md</code> entry.
+            </p>
+          )}
 
           <div className="h-[300px] overflow-hidden rounded-xl border border-border-subtle bg-bg-primary">
             {viewMode === "source" ? (

@@ -12,7 +12,7 @@ import { StreamRuntimeSync } from "@/components/providers/StreamRuntimeSync";
 
 export const metadata: Metadata = {
   title: "NoonFlow",
-  description: "Desktop workspace for local Claude Code and Codex sessions",
+  description: "Desktop workspace for local Claude Code, Codex, and Pi sessions",
 };
 
 export default function RootLayout({

@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 test.describe('Assistant Runtime Selector', () => {
   test('Codex sessions render Codex input and send assistant_runtime in chat requests', async ({ page }) => {
     const sessionId = 'assistant-runtime-e2e';
-    const currentRuntime: 'claude_code' | 'codex' = 'codex';
+    const currentRuntime: 'claude_code' | 'codex' | 'pi' = 'codex';
     const currentModel = 'gpt-5';
     const currentProviderId = '';
     let messagesRequestCount = 0;
@@ -117,6 +117,16 @@ test.describe('Assistant Runtime Selector', () => {
               supports_plan_mode: true,
               supports_permissions: false,
             },
+            {
+              id: 'pi',
+              label: 'Pi',
+              enabled: true,
+              available: true,
+              installed: true,
+              configured: true,
+              supports_plan_mode: true,
+              supports_permissions: false,
+            },
           ],
         }),
       });
@@ -184,9 +194,10 @@ test.describe('Assistant Runtime Selector', () => {
     });
 
     await page.goto(`/chat/${sessionId}`);
-    await expect(page.locator('textarea[placeholder="Message Codex..."]')).toBeVisible();
+    await expect(page.getByRole('button', { name: /Pi/ })).toBeVisible();
+    await expect(page.getByRole('textbox', { name: 'Describe your task, use @ for files, / for commands' })).toBeVisible();
 
-    const input = page.locator('textarea[placeholder="Message Codex..."]');
+    const input = page.getByRole('textbox', { name: 'Describe your task, use @ for files, / for commands' });
     await input.fill('Run with Codex');
     await input.press('Enter');
 

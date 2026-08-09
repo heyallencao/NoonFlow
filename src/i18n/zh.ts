@@ -365,7 +365,7 @@ const zh: Record<TranslationKey, string> = {
   'memory.refresh': '刷新',
   'memory.refreshing': '刷新中...',
   'memory.recentSessionsTitle': '最近会话记忆',
-  'memory.recentSessionsDesc': '可搜索并回放最近的 Claude Code 与 Codex 会话。',
+  'memory.recentSessionsDesc': '可搜索并回放最近的 Claude Code、Codex 与 Pi 会话。',
   'memory.searchPlaceholder': '搜索会话...',
   'memory.filterAllProjects': '全部项目',
   'memory.runtimeAll': '全部',
@@ -449,6 +449,7 @@ const zh: Record<TranslationKey, string> = {
   'messageInput.quickSkillDocPrompt': '请基于当前功能产出一份简洁技术文档，包含背景、实现方案、使用方式和注意事项。',
   'messageInput.placeholderBadge': '补充必要上下文后按 Enter 发送（可选）',
   'messageInput.placeholderCodex': '输入你的需求，@ 选择文件，/ 查看命令',
+  'messageInput.placeholderPi': '输入交给 Pi 的任务，@ 选择文件，/ 查看命令',
   'messageInput.placeholderClaude': '输入你的需求，@ 选择文件，/ 查看命令',
 
   // ── Streaming message ───────────────────────────────────────
@@ -788,7 +789,7 @@ const zh: Record<TranslationKey, string> = {
   'connection.notInstalled': '运行时环境未就绪',
   'connection.installed': '运行时环境已就绪',
   'connection.version': '版本：{version}',
-  'connection.installPrompt': '要使用运行时功能，请安装并初始化 Claude/Codex CLI。',
+  'connection.installPrompt': '要使用运行时功能，请安装并初始化 Claude Code、Codex 或 Pi。',
   'connection.runCommand': '在终端中运行以下命令：',
   'connection.installAuto': '一键安装并初始化',
   'connection.refresh': '刷新',

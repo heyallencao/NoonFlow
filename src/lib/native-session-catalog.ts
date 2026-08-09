@@ -7,7 +7,7 @@ import type { AssistantRuntime, ChatSession, Message, SessionListType } from '@/
 function toChatSession(info: ReturnType<typeof listReplaySessions>[number]): ChatSession {
   return {
     id: info.sessionId,
-    title: info.preview || `${info.runtime === 'codex' ? 'Codex' : 'Claude'} ${info.sessionId.slice(0, 8)}`,
+    title: info.preview || `${info.runtime === 'codex' ? 'Codex' : info.runtime === 'pi' ? 'Pi' : 'Claude'} ${info.sessionId.slice(0, 8)}`,
     created_at: info.createdAt,
     updated_at: info.updatedAt,
     session_type: 'chat',

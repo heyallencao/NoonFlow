@@ -81,4 +81,16 @@ describe("/api/skills/marketplace/install", () => {
     const payload = await response.json() as { error?: string };
     assert.match(payload.error || "", /already exists/i);
   });
+
+  it("installs Pi skills into the shared Codex/Pi agents directory", async () => {
+    const response = await installSkill(new Request("http://localhost/api/skills/marketplace/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source: "owner/pi-skill", runtime: "pi", global: true }),
+    }));
+
+    assert.equal(response.status, 200);
+    await response.text();
+    assert.equal(fs.readFileSync(logFile, "utf-8").trim(), "skills add owner/pi-skill -y -g --agent codex");
+  });
 });

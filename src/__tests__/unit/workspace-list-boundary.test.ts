@@ -31,7 +31,7 @@ function session(id: string, workingDirectory: string): ChatSession {
 }
 
 describe('NoonFlow workspace boundary', () => {
-  it('never creates workspace entries from native Claude or Codex sessions', () => {
+  it('never creates workspace entries from native Claude, Codex, or Pi sessions', () => {
     const opened = '/workspace/opened-in-noonflow';
     const external = '/workspace/external-native-session';
     const result = buildWorkspaceList({

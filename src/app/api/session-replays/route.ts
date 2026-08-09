@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
     const cursor = parseBoundedInteger(request.nextUrl.searchParams.get('cursor'), 0, 100_000);
     const limit = parseBoundedInteger(request.nextUrl.searchParams.get('limit'), 20, 50);
     const runtimeParam = request.nextUrl.searchParams.get('runtime');
-    const runtime: AssistantRuntime | undefined = runtimeParam === 'codex' || runtimeParam === 'claude_code'
+    const runtime: AssistantRuntime | undefined = runtimeParam === 'codex' || runtimeParam === 'claude_code' || runtimeParam === 'pi'
       ? runtimeParam
       : undefined;
     const query = (request.nextUrl.searchParams.get('query') || '').slice(0, 200);

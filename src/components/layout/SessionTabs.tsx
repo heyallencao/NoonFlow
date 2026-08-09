@@ -120,6 +120,16 @@ function RuntimeGlyph({ runtime, className }: { runtime?: AssistantRuntime | "";
     );
   }
 
+  if (runtime === 'pi') {
+    return (
+      <svg className={className} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M4 12V4.5h4.1a2.5 2.5 0 0 1 0 5H4" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M11.2 6.4V12" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" />
+        <circle cx="11.2" cy="4.2" r=".8" fill="currentColor" />
+      </svg>
+    );
+  }
+
   return (
     <svg className={className} viewBox="0 0 16 16" fill="none" aria-hidden="true">
       <circle cx="8" cy="8" r="5" stroke="currentColor" strokeWidth="1.35" />
@@ -132,6 +142,7 @@ function RuntimeGlyph({ runtime, className }: { runtime?: AssistantRuntime | "";
 function getRuntimeLabel(runtime?: AssistantRuntime | ""): string {
   if (runtime === 'codex') return 'Codex';
   if (runtime === 'claude_code') return 'Claude Code';
+  if (runtime === 'pi') return 'Pi';
   return 'Unknown Runtime';
 }
 
@@ -357,10 +368,13 @@ export function SessionTabs({
   );
   const claudeRuntime = assistantRuntimeById.get('claude_code');
   const codexRuntime = assistantRuntimeById.get('codex');
+  const piRuntime = assistantRuntimeById.get('pi');
   const showClaudeCreateButton = claudeRuntime ? claudeRuntime.enabled : true;
   const showCodexCreateButton = codexRuntime ? codexRuntime.enabled : true;
+  const showPiCreateButton = piRuntime ? piRuntime.enabled : true;
   const canCreateClaudeSession = Boolean(normalizedWorkspace) && !creating && (claudeRuntime ? claudeRuntime.available : true);
   const canCreateCodexSession = Boolean(normalizedWorkspace) && !creating && (codexRuntime ? codexRuntime.available : true);
+  const canCreatePiSession = Boolean(normalizedWorkspace) && !creating && (piRuntime ? piRuntime.available || piRuntime.launchable : true);
   const claudeTooltip = !normalizedWorkspace
     ? t("sessionTabs.selectWorkspaceFirst")
     : (!claudeRuntime?.available && claudeRuntime?.status_message)
@@ -371,6 +385,11 @@ export function SessionTabs({
     : (!codexRuntime?.available && codexRuntime?.status_message)
       ? codexRuntime.status_message
       : "New Codex chat";
+  const piTooltip = !normalizedWorkspace
+    ? t("sessionTabs.selectWorkspaceFirst")
+    : (!piRuntime?.launchable && piRuntime?.status_message)
+      ? piRuntime.status_message
+      : "New Pi chat";
   const sessionRuntimeById = useMemo(() => {
     const runtimeMap = new Map<string, SessionTabRuntimeState>();
     for (const session of workspaceSessions) {
@@ -798,7 +817,7 @@ export function SessionTabs({
     });
   }, [activeSessionId, visibleTabs.length, persistTabsScroll]);
 
-  const handleCreateSession = useCallback(async (explicitRuntime?: 'claude_code' | 'codex') => {
+  const handleCreateSession = useCallback(async (explicitRuntime?: AssistantRuntime) => {
     if (!normalizedWorkspace || creating) return;
     setCreating(true);
     try {
@@ -1222,6 +1241,27 @@ export function SessionTabs({
                 </span>
               </TooltipTrigger>
               <TooltipContent side="bottom">{codexTooltip}</TooltipContent>
+            </Tooltip>
+          )}
+          {showPiCreateButton && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button
+                    variant="outline"
+                    size="icon-sm"
+                    className="h-7 w-7 rounded-full border-violet-400/20 bg-violet-500/8 text-violet-300 hover:bg-violet-500/14 hover:text-violet-200"
+                    disabled={!canCreatePiSession}
+                    onClick={() => {
+                      void handleCreateSession('pi');
+                    }}
+                    aria-label="New Pi chat"
+                  >
+                    <RuntimeGlyph runtime="pi" className="h-3.5 w-3.5" />
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">{piTooltip}</TooltipContent>
             </Tooltip>
           )}
           {!panelOpen && (

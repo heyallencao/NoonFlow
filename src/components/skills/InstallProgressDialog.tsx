@@ -22,7 +22,7 @@ interface InstallProgressDialogProps {
   skillName: string;
   skillId?: string;
   onComplete: () => void;
-  defaultRuntime?: "claude-code" | "codex";
+  defaultRuntime?: "claude-code" | "codex" | "pi";
 }
 
 type Phase = "idle" | "running" | "success" | "error";
@@ -40,7 +40,7 @@ export function InstallProgressDialog({
   const { t } = useTranslation();
   const [phase, setPhase] = useState<Phase>("idle");
   const [logs, setLogs] = useState<string[]>([]);
-  const [runtime, setRuntime] = useState<"claude-code" | "codex">(defaultRuntime);
+  const [runtime, setRuntime] = useState<"claude-code" | "codex" | "pi">(defaultRuntime);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -214,7 +214,7 @@ export function InstallProgressDialog({
           <div className="mx-4 mb-2 flex items-center gap-2">
             <span className="text-xs text-muted-foreground">Install for:</span>
             <div className="flex rounded-lg border border-border-subtle bg-bg-tertiary p-0.5">
-              {(["claude-code", "codex"] as const).map((r) => (
+              {(["claude-code", "codex", "pi"] as const).map((r) => (
                 <button
                   key={r}
                   onClick={() => setRuntime(r)}
@@ -225,10 +225,13 @@ export function InstallProgressDialog({
                       : "text-muted-foreground hover:text-foreground"
                   )}
                 >
-                  {r === "claude-code" ? "Claude Code" : "Codex CLI"}
+                  {r === "claude-code" ? "Claude Code" : r === "codex" ? "Codex" : "Pi (shared)"}
                 </button>
               ))}
             </div>
+            {runtime === "pi" && (
+              <span className="text-[10px] text-muted-foreground">Pi and Codex share ~/.agents/skills.</span>
+            )}
           </div>
         )}
 

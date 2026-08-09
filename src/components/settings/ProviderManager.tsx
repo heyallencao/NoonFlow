@@ -50,7 +50,7 @@ import {
   type QuickPreset,
 } from "./provider-manager/constants";
 
-type InstallerTarget = "claude" | "codex";
+type InstallerTarget = "claude" | "codex" | "pi";
 
 interface InstallPrereqSnapshot {
   hasNode: boolean;
@@ -59,8 +59,11 @@ interface InstallPrereqSnapshot {
   claudeVersion?: string;
   hasCodex: boolean;
   codexVersion?: string;
+  hasPi: boolean;
+  piVersion?: string;
   claudeInitialized: boolean;
   codexInitialized: boolean;
+  piInitialized: boolean;
 }
 
 export function ProviderManager() {
@@ -121,8 +124,11 @@ export function ProviderManager() {
         claudeVersion: data.claudeVersion,
         hasCodex: data.hasCodex,
         codexVersion: data.codexVersion,
+        hasPi: data.hasPi,
+        piVersion: data.piVersion,
         claudeInitialized: data.claudeInitialized,
         codexInitialized: data.codexInitialized,
+        piInitialized: data.piInitialized,
       });
     } catch {
       // ignore bridge errors, installation section is best-effort
@@ -289,8 +295,8 @@ export function ProviderManager() {
                 </h3>
                 <p className="mt-1 text-[13px] text-muted-foreground">
                   {isZh
-                    ? "提供 Claude / Codex 独立一键安装与初始化入口。"
-                    : "Install and initialize Claude/Codex separately with one click."}
+                    ? "提供 Claude Code、Codex 与 Pi 独立一键安装、初始化和更新入口。"
+                    : "Install, initialize, and update Claude Code, Codex, or Pi separately."}
                 </p>
               </div>
 
@@ -362,6 +368,32 @@ export function ProviderManager() {
                       {installPrereqs?.hasCodex
                         ? (isZh ? "初始化 Codex" : "Initialize Codex")
                         : (isZh ? "安装 Codex" : "Install Codex")}
+                    </Button>
+                  )}
+                </div>
+
+                <div className="mt-2 flex items-center gap-3 rounded-lg bg-background/75 px-3 py-3">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium">Pi CLI</p>
+                    <p className="text-xs text-muted-foreground">
+                      {installPrereqs?.hasPi
+                        ? `${isZh ? "已安装" : "Installed"} ${installPrereqs.piVersion || ""}`.trim()
+                        : (isZh ? "未安装" : "Not installed")}
+                      {" · "}
+                      {installPrereqs?.piInitialized
+                        ? (isZh ? "模型/认证已就绪" : "Model/auth ready")
+                        : (isZh ? "模型/认证待配置" : "Model/auth needs setup")}
+                    </p>
+                  </div>
+                  {installPrereqs?.hasPi && installPrereqs?.piInitialized ? (
+                    <Button size="xs" variant="outline" className="shrink-0 gap-1" onClick={() => openInstaller("pi")}>
+                      <HugeiconsIcon icon={Tick01Icon} className="h-3.5 w-3.5" />
+                      {isZh ? "更新 Pi" : "Update Pi"}
+                    </Button>
+                  ) : (
+                    <Button size="xs" variant="outline" className="shrink-0 gap-1" onClick={() => openInstaller("pi")}>
+                      <HugeiconsIcon icon={installPrereqs?.hasPi ? Tick01Icon : Download04Icon} className="h-3.5 w-3.5" />
+                      {installPrereqs?.hasPi ? (isZh ? "初始化 Pi" : "Initialize Pi") : (isZh ? "安装 Pi" : "Install Pi")}
                     </Button>
                   )}
                 </div>

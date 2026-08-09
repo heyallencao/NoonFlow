@@ -19,9 +19,19 @@ import {
   writeStorageValue,
 } from "@/lib/browser-storage";
 
-interface ClaudeStatus {
-  connected: boolean;
-  version: string | null;
+interface RuntimeStatus {
+  id: "claude_code" | "codex" | "pi";
+  label: string;
+  launchable: boolean;
+  installed: boolean;
+  configured: boolean;
+  available: boolean;
+  version?: string;
+  status_message?: string;
+}
+
+interface RuntimeStatusResponse {
+  runtimes: RuntimeStatus[];
 }
 
 const BASE_INTERVAL = 30_000; // 30s
@@ -32,7 +42,7 @@ const LEGACY_INSTALL_WIZARD_DISMISSED_KEYS = ["monolith:install-wizard-dismissed
 
 export function ConnectionStatus() {
   const { t } = useTranslation();
-  const [status, setStatus] = useState<ClaudeStatus | null>(null);
+  const [status, setStatus] = useState<RuntimeStatusResponse | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
 
@@ -57,15 +67,16 @@ export function ConnectionStatus() {
 
   const checkStatus = useCallback(async () => {
     try {
-      const res = await fetch("/api/claude-status");
+      const res = await fetch("/api/assistant-runtimes");
       if (res.ok) {
-        const data: ClaudeStatus = await res.json();
-        if (lastConnectedRef.current === data.connected) {
+        const data: RuntimeStatusResponse = await res.json();
+        const anyAvailable = data.runtimes.some((runtime) => runtime.available);
+        if (lastConnectedRef.current === anyAvailable) {
           stableCountRef.current++;
         } else {
           stableCountRef.current = 0;
         }
-        lastConnectedRef.current = data.connected;
+        lastConnectedRef.current = anyAvailable;
         setStatus(data);
       }
     } catch {
@@ -75,7 +86,7 @@ export function ConnectionStatus() {
         stableCountRef.current = 0;
       }
       lastConnectedRef.current = false;
-      setStatus({ connected: false, version: null });
+      setStatus({ runtimes: [] });
     }
     schedule();
   }, [schedule]);
@@ -100,7 +111,7 @@ export function ConnectionStatus() {
   useEffect(() => {
     if (
       status !== null &&
-      !status.connected &&
+      !status.runtimes.some((runtime) => runtime.available) &&
       hasNativeInstallBridge &&
       !autoPromptedRef.current &&
       !dialogOpen &&
@@ -126,7 +137,8 @@ export function ConnectionStatus() {
     }
   }, []);
 
-  const connected = status?.connected ?? false;
+  const connected = status?.runtimes.some((runtime) => runtime.available) ?? false;
+  const availableLabels = status?.runtimes.filter((runtime) => runtime.available).map((runtime) => runtime.label).join(", ") || "";
 
   return (
     <>
@@ -166,20 +178,24 @@ export function ConnectionStatus() {
             </DialogTitle>
             <DialogDescription>
               {connected
-                ? `Claude runtime v${status?.version} is running and ready.`
-                : "Claude/Codex runtime environment is required to use this application."}
+                ? `${availableLabels} ${status?.runtimes.filter((runtime) => runtime.available).length === 1 ? "is" : "are"} ready.`
+                : "At least one Claude Code, Codex, or Pi runtime is required to use this application."}
             </DialogDescription>
           </DialogHeader>
 
           {connected ? (
-            <div className="space-y-3 text-sm">
-              <div className="flex items-center gap-3 rounded-lg bg-emerald-500/10 px-4 py-3">
-                <span className="block h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-500" />
-                <div>
-                  <p className="font-medium text-emerald-700 dark:text-emerald-400">Active</p>
-                  <p className="text-xs text-muted-foreground">{t('connection.version', { version: status?.version ?? '' })}</p>
+            <div className="space-y-2 text-sm">
+              {status?.runtimes.map((runtime) => (
+                <div key={runtime.id} className={cn("flex items-center gap-3 rounded-lg px-4 py-3", runtime.available ? "bg-emerald-500/10" : "bg-muted/50")}>
+                  <span className={cn("block h-2.5 w-2.5 shrink-0 rounded-full", runtime.available ? "bg-emerald-500" : "bg-muted-foreground/40")} />
+                  <div>
+                    <p className={cn("font-medium", runtime.available && "text-emerald-700 dark:text-emerald-400")}>{runtime.label}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {runtime.available ? `${runtime.version || "Installed"} · Ready` : runtime.status_message || "Needs setup"}
+                    </p>
+                  </div>
                 </div>
-              </div>
+              ))}
             </div>
           ) : (
             <div className="space-y-4 text-sm">
@@ -203,23 +219,23 @@ export function ConnectionStatus() {
               </div>
 
               <div>
-                <h4 className="font-medium mb-1.5">3. Initialize Claude</h4>
+                <h4 className="font-medium mb-1.5">3. Install Pi CLI</h4>
                 <code className="block rounded-md bg-muted px-3 py-2 text-xs">
-                  claude login
+                  npm install -g --ignore-scripts @earendil-works/pi-coding-agent
                 </code>
               </div>
 
               <div>
-                <h4 className="font-medium mb-1.5">4. Initialize Codex</h4>
+                <h4 className="font-medium mb-1.5">4. Initialize one runtime</h4>
                 <code className="block rounded-md bg-muted px-3 py-2 text-xs">
-                  codex login
+                  claude login  # or: codex login  # or: pi then /login
                 </code>
               </div>
 
               <div>
                 <h4 className="font-medium mb-1.5">5. Verify Installation</h4>
                 <code className="block rounded-md bg-muted px-3 py-2 text-xs">
-                  claude --version && codex --version
+                  claude --version; codex --version; pi --version
                 </code>
               </div>
 
@@ -254,7 +270,7 @@ export function ConnectionStatus() {
         open={wizardOpen}
         onOpenChange={handleWizardOpenChange}
         onInstallComplete={handleManualRefresh}
-        target="claude"
+        target="all"
       />
     </>
   );

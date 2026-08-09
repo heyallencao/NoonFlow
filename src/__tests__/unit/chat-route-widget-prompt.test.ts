@@ -71,7 +71,7 @@ describe('/api/chat widget prompt injection', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         settings: {
-          assistant_runtime_enabled_claude: 'true',
+          assistant_runtime_enabled_claude_code: 'true',
           anthropic_auth_token: 'test-token',
           generative_ui_enabled: 'true',
         },
@@ -121,7 +121,7 @@ describe('/api/chat widget prompt injection', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         settings: {
-          assistant_runtime_enabled_claude: 'true',
+          assistant_runtime_enabled_claude_code: 'true',
           anthropic_auth_token: 'test-token',
           generative_ui_enabled: 'false',
         },

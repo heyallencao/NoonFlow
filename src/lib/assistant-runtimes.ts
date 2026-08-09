@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import { getAuthModeSettingKey, inferAssistantAuthMode } from '@/lib/assistant-auth';
 import { getAllProviders, getSetting } from '@/lib/db';
-import { findClaudeBinary, findCodexBinary, getClaudeVersion, getCodexVersion } from '@/lib/platform';
+import { findClaudeBinary, findCodexBinary, findPiBinary, getClaudeVersion, getCodexVersion, getPiVersion, listPiModels } from '@/lib/platform';
 import type { AssistantRuntime, AssistantRuntimeStatus } from '@/types';
 import { SETTING_KEYS } from '@/types';
 
@@ -21,12 +21,18 @@ export const assistantRuntimePlatform = {
   findCodexBinary,
   getClaudeVersion,
   getCodexVersion,
+  findPiBinary,
+  getPiVersion,
+  listPiModels,
+  hasPiConfiguration,
 };
 
 function readEnabledSetting(runtime: AssistantRuntime): boolean {
   const key = runtime === 'claude_code'
     ? SETTING_KEYS.ASSISTANT_RUNTIME_ENABLED_CLAUDE
-    : SETTING_KEYS.ASSISTANT_RUNTIME_ENABLED_CODEX;
+    : runtime === 'codex'
+    ? SETTING_KEYS.ASSISTANT_RUNTIME_ENABLED_CODEX
+    : SETTING_KEYS.ASSISTANT_RUNTIME_ENABLED_PI;
   return getSetting(key) !== 'false';
 }
 
@@ -97,7 +103,56 @@ function hasCodexConfiguration(): boolean {
   );
 }
 
-function buildAssistantRuntimeStatus(runtime: AssistantRuntime): AssistantRuntimeStatus {
+const PI_API_KEY_ENV_VARS = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_OAUTH_TOKEN',
+  'ANT_LING_API_KEY',
+  'OPENAI_API_KEY',
+  'AZURE_OPENAI_API_KEY',
+  'NVIDIA_API_KEY',
+  'GEMINI_API_KEY',
+  'DEEPSEEK_API_KEY',
+  'MISTRAL_API_KEY',
+  'GROQ_API_KEY',
+  'CEREBRAS_API_KEY',
+  'XAI_API_KEY',
+  'OPENROUTER_API_KEY',
+  'AI_GATEWAY_API_KEY',
+  'ZAI_API_KEY',
+  'ZAI_CODING_CN_API_KEY',
+  'OPENCODE_API_KEY',
+  'HF_TOKEN',
+  'FIREWORKS_API_KEY',
+  'TOGETHER_API_KEY',
+  'BASETEN_API_KEY',
+  'KIMI_API_KEY',
+  'MOONSHOT_API_KEY',
+  'MINIMAX_API_KEY',
+  'CLOUDFLARE_API_KEY',
+  'QWEN_TOKEN_PLAN_API_KEY',
+  'QWEN_TOKEN_PLAN_CN_API_KEY',
+  'XIAOMI_API_KEY',
+  'XIAOMI_TOKEN_PLAN_CN_API_KEY',
+  'XIAOMI_TOKEN_PLAN_AMS_API_KEY',
+  'XIAOMI_TOKEN_PLAN_SGP_API_KEY',
+  'AWS_PROFILE',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_BEARER_TOKEN_BEDROCK',
+] as const;
+
+function hasPiConfiguration(): boolean {
+  const configuredAgentDir = process.env.PI_CODING_AGENT_DIR?.trim();
+  const agentDir = configuredAgentDir
+    ? configuredAgentDir.replace(/^~(?=$|[\\/])/, os.homedir())
+    : path.join(os.homedir(), '.pi', 'agent');
+  if (hasNonEmptyFile(path.join(agentDir, 'auth.json'))) {
+    return true;
+  }
+  return PI_API_KEY_ENV_VARS.some((name) => Boolean(process.env[name]));
+}
+
+function buildAssistantRuntimeStatus(runtime: Exclude<AssistantRuntime, 'pi'>): AssistantRuntimeStatus {
   if (runtime === 'claude_code') {
     const installed = Boolean(assistantRuntimePlatform.findClaudeBinary());
     const enabled = readEnabledSetting('claude_code');
@@ -108,6 +163,7 @@ function buildAssistantRuntimeStatus(runtime: AssistantRuntime): AssistantRuntim
       enabled,
       installed,
       configured,
+      launchable: enabled && installed,
       available: enabled && installed && configured,
       supports_plan_mode: true,
       supports_permissions: true,
@@ -130,6 +186,7 @@ function buildAssistantRuntimeStatus(runtime: AssistantRuntime): AssistantRuntim
     enabled,
     installed,
     configured,
+    launchable: enabled && installed,
     available: enabled && installed && configured,
     supports_plan_mode: true,
     supports_permissions: false,
@@ -143,9 +200,38 @@ function buildAssistantRuntimeStatus(runtime: AssistantRuntime): AssistantRuntim
   };
 }
 
+async function buildPiRuntimeStatus(): Promise<AssistantRuntimeStatus> {
+  const binary = assistantRuntimePlatform.findPiBinary();
+  const installed = Boolean(binary);
+  const enabled = readEnabledSetting('pi');
+  const probe = binary ? await assistantRuntimePlatform.listPiModels(binary) : { models: [] };
+  const configured = probe.models.length > 0 || assistantRuntimePlatform.hasPiConfiguration();
+  return {
+    id: 'pi',
+    label: 'Pi',
+    enabled,
+    installed,
+    configured,
+    // Pi can be configured through project providers/extensions that are only
+    // visible after cwd/trust resolution. Do not turn a global heuristic into
+    // a hard session-creation gate; the runtime will return the precise error.
+    launchable: enabled && installed,
+    available: enabled && installed && configured,
+    supports_plan_mode: true,
+    supports_permissions: false,
+    status_message: !enabled
+      ? '设置中已禁用 / Disabled in settings'
+      : !installed
+      ? '未安装 Pi CLI / Pi CLI is not installed'
+      : !configured
+      ? 'Pi 已安装；请运行 pi 后使用 /login 配置模型 / Pi is installed; run pi and use /login to configure a model'
+      : undefined,
+  };
+}
+
 export function getDefaultAssistantRuntime(): AssistantRuntime {
   const value = getSetting(SETTING_KEYS.DEFAULT_ASSISTANT_RUNTIME);
-  return value === 'codex' ? 'codex' : 'claude_code';
+  return value === 'codex' || value === 'pi' ? value : 'claude_code';
 }
 
 export async function getPreferredAvailableAssistantRuntime(
@@ -170,10 +256,16 @@ export async function getPreferredAvailableAssistantRuntime(
 }
 
 export async function listAssistantRuntimes(): Promise<AssistantRuntimeStatus[]> {
-  return [
+  const statuses = await Promise.all([
     buildAssistantRuntimeStatus('claude_code'),
     buildAssistantRuntimeStatus('codex'),
-  ];
+    buildPiRuntimeStatus(),
+  ]);
+  const versions = await Promise.all(statuses.map((status) => getAssistantRuntimeVersion(status.id)));
+  return statuses.map((status, index) => ({
+    ...status,
+    ...(versions[index] ? { version: versions[index] || undefined } : {}),
+  }));
 }
 
 export async function getAssistantRuntimeVersion(runtime: AssistantRuntime): Promise<string | null> {
@@ -187,9 +279,12 @@ export async function getAssistantRuntimeVersion(runtime: AssistantRuntime): Pro
   if (runtime === 'claude_code') {
     const binary = assistantRuntimePlatform.findClaudeBinary();
     version = binary ? await assistantRuntimePlatform.getClaudeVersion(binary) : null;
-  } else {
+  } else if (runtime === 'codex') {
     const binary = assistantRuntimePlatform.findCodexBinary();
     version = binary ? await assistantRuntimePlatform.getCodexVersion(binary) : null;
+  } else {
+    const binary = assistantRuntimePlatform.findPiBinary();
+    version = binary ? await assistantRuntimePlatform.getPiVersion(binary) : null;
   }
 
   runtimeVersionCache.set(runtime, {
@@ -200,5 +295,5 @@ export async function getAssistantRuntimeVersion(runtime: AssistantRuntime): Pro
 }
 
 export async function getAssistantRuntimeStatus(runtime: AssistantRuntime): Promise<AssistantRuntimeStatus | null> {
-  return buildAssistantRuntimeStatus(runtime);
+  return runtime === 'pi' ? buildPiRuntimeStatus() : buildAssistantRuntimeStatus(runtime);
 }

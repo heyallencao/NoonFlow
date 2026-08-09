@@ -13,7 +13,7 @@ import { cn } from '@/lib/utils';
 import { isImeComposingEvent } from '@/lib/ime';
 import { applyTextInputNavigationKeydown } from '@/lib/text-input-keyboard';
 import { setStoredClaudePreference } from '@/lib/chat-preferences';
-import type { ProviderModelGroup } from '@/types';
+import type { AssistantRuntime, PiModelOption, ProviderModelGroup } from '@/types';
 import type { TranslationKey } from '@/i18n';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card';
 import {
@@ -413,23 +413,29 @@ export function MessageModeToggle({ mode, onModeChange, t }: MessageModeTogglePr
 }
 
 interface ModelSelectorProps {
+  assistantRuntime: AssistantRuntime;
   isClaudeRuntime: boolean;
   modelName?: string;
   currentModelValue: string;
   currentProviderIdValue: string;
   currentModelLabel: string;
   providerGroups: ProviderModelGroup[];
+  piModels: PiModelOption[];
+  piModelsError?: string;
   onModelChange?: (model: string) => void;
   onProviderModelChange?: (providerId: string, model: string) => void;
 }
 
 export function ModelSelector({
+  assistantRuntime,
   isClaudeRuntime,
   modelName,
   currentModelValue,
   currentProviderIdValue,
   currentModelLabel,
   providerGroups,
+  piModels,
+  piModelsError,
   onModelChange,
   onProviderModelChange,
 }: ModelSelectorProps) {
@@ -454,6 +460,65 @@ export function ModelSelector({
     setStoredClaudePreference(nextModel, providerModelId);
     setModelMenuOpen(false);
   }, [onModelChange, onProviderModelChange]);
+
+  if (assistantRuntime === 'pi') {
+    return (
+      <div className="relative" ref={modelMenuRef}>
+        <PromptInputButton
+          className={cn(
+            'rounded-full border border-transparent text-foreground/74 hover:border-border/62 hover:bg-foreground/[0.07] hover:text-foreground/94',
+            modelMenuOpen && 'border-border/75 bg-foreground/[0.1] text-foreground'
+          )}
+          onClick={() => setModelMenuOpen((prev) => !prev)}
+          tooltip={piModelsError || 'Choose a provider-scoped Pi model'}
+        >
+          <span className="max-w-44 truncate text-xs font-medium">{currentModelValue || 'Pi default'}</span>
+          <HugeiconsIcon icon={ArrowDown01Icon} className={cn('h-2.5 w-2.5 transition-transform duration-200', modelMenuOpen && 'rotate-180')} />
+        </PromptInputButton>
+        {modelMenuOpen && (
+          <div className="absolute bottom-full left-0 z-50 mb-1.5 max-h-80 w-72 overflow-y-auto rounded-lg border border-border/70 bg-popover shadow-[0_10px_24px_rgba(0,0,0,0.24)]">
+            <div className="border-b border-border/65 px-3 py-1.5 text-[10px] font-medium text-muted-foreground">
+              Pi Models · provider/model
+            </div>
+            {piModels.length === 0 ? (
+              <div className="px-3 py-2 text-xs text-muted-foreground">
+                {piModelsError || 'No configured Pi models. Run pi and use /login or /model.'}
+              </div>
+            ) : (
+              <div className="py-0.5">
+                {piModels.map((option) => {
+                  const value = option.value || `${option.provider}/${option.id}`;
+                  const isActive = value === currentModelValue;
+                  return (
+                    <button
+                      key={value}
+                      className={cn(
+                        'flex w-full items-center justify-between gap-2 rounded-md border border-transparent px-3 py-1.5 text-left transition-colors',
+                        isActive ? 'border-primary/25 bg-accent/62 text-foreground' : 'text-foreground/84 hover:bg-accent/45 hover:text-foreground'
+                      )}
+                      onClick={() => {
+                        onModelChange?.(value);
+                        setModelMenuOpen(false);
+                      }}
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate text-xs font-medium">{value}</span>
+                        <span className="block text-[10px] text-muted-foreground">
+                          {option.contextWindow ? `${option.contextWindow.toLocaleString()} ctx` : 'context unknown'}
+                          {option.reasoning ? ' · reasoning' : ''}{option.images ? ' · images' : ''}
+                        </span>
+                      </span>
+                      {isActive && <span className="text-xs">✓</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   if (!isClaudeRuntime) {
     const codexOptions = CODEX_BASE_MODEL_OPTIONS.some((option) => option.value === codexModel.baseModel)

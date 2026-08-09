@@ -368,7 +368,7 @@ const en = {
   'memory.refresh': 'Refresh',
   'memory.refreshing': 'Refreshing...',
   'memory.recentSessionsTitle': 'Recent Sessions Memory',
-  'memory.recentSessionsDesc': 'Search and replay recent Claude Code and Codex sessions.',
+  'memory.recentSessionsDesc': 'Search and replay recent Claude Code, Codex, and Pi sessions.',
   'memory.searchPlaceholder': 'Search sessions...',
   'memory.filterAllProjects': 'All projects',
   'memory.runtimeAll': 'All',
@@ -452,6 +452,7 @@ const en = {
   'messageInput.quickSkillDocPrompt': 'Based on the current feature, write a concise technical document including background, implementation, usage, and caveats.',
   'messageInput.placeholderBadge': 'Add context if needed, then press Enter',
   'messageInput.placeholderCodex': 'Describe your task, use @ for files, / for commands',
+  'messageInput.placeholderPi': 'Describe your task for Pi, use @ for files, / for commands',
   'messageInput.placeholderClaude': 'Describe your task, use @ for files, / for commands',
 
   // ── Streaming message ───────────────────────────────────────
@@ -791,7 +792,7 @@ const en = {
   'connection.notInstalled': 'Runtime environment is not ready',
   'connection.installed': 'Runtime environment is ready',
   'connection.version': 'Version: {version}',
-  'connection.installPrompt': 'To use runtime features, install and initialize Claude/Codex CLI.',
+  'connection.installPrompt': 'To use runtime features, install and initialize Claude Code, Codex, or Pi.',
   'connection.runCommand': 'Run the following command in your terminal:',
   'connection.installAuto': 'One-click Install & Initialize',
   'connection.refresh': 'Refresh',

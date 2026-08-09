@@ -1,5 +1,6 @@
 import { listClaudeSessionPage, listClaudeSessions, parseClaudeSession } from '@/lib/claude-session-parser';
 import { listCodexSessionPage, listCodexSessions, parseCodexSession } from '@/lib/codex-session-parser';
+import { listPiSessionPage, listPiSessions, parsePiSession } from '@/lib/pi-session-parser';
 import type { AssistantRuntime, Message } from '@/types';
 import type { SessionPreviewTag } from '@/lib/session-preview';
 
@@ -71,8 +72,9 @@ function toReplayMessages(sessionId: string, messages: Array<{
 export function listReplaySessions(): ReplaySessionInfo[] {
   const claudeSessions = listClaudeSessions().map(toClaudeReplayInfo);
   const codexSessions = listCodexSessions().map(toCodexReplayInfo);
+  const piSessions = listPiSessions().map(toPiReplayInfo);
 
-  return [...claudeSessions, ...codexSessions].sort(compareReplaySessions);
+  return [...claudeSessions, ...codexSessions, ...piSessions].sort(compareReplaySessions);
 }
 
 export function listReplaySessionsForWorkspaces(workspaces: readonly string[]): ReplaySessionInfo[] {
@@ -80,7 +82,8 @@ export function listReplaySessionsForWorkspaces(workspaces: readonly string[]): 
   if (normalizedWorkspaces.length === 0) return [];
   const claudeSessions = listClaudeSessionPage({ projectPaths: normalizedWorkspaces }).sessions.map(toClaudeReplayInfo);
   const codexSessions = listCodexSessionPage({ projectPaths: normalizedWorkspaces }).sessions.map(toCodexReplayInfo);
-  return [...claudeSessions, ...codexSessions].sort(compareReplaySessions);
+  const piSessions = listPiSessionPage({ projectPaths: normalizedWorkspaces }).sessions.map(toPiReplayInfo);
+  return [...claudeSessions, ...codexSessions, ...piSessions].sort(compareReplaySessions);
 }
 
 function toClaudeReplayInfo(session: ReturnType<typeof listClaudeSessions>[number]): ReplaySessionInfo {
@@ -105,6 +108,25 @@ function toClaudeReplayInfo(session: ReturnType<typeof listClaudeSessions>[numbe
 function toCodexReplayInfo(session: ReturnType<typeof listCodexSessions>[number]): ReplaySessionInfo {
   return {
     runtime: 'codex' as const,
+    sessionId: session.sessionId,
+    projectPath: session.projectPath,
+    projectName: session.projectName,
+    cwd: session.cwd,
+    gitBranch: session.gitBranch,
+    version: session.version,
+    model: session.model,
+    preview: session.preview,
+    previewTags: session.previewTags,
+    userMessageCount: session.userMessageCount,
+    assistantMessageCount: session.assistantMessageCount,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+  };
+}
+
+function toPiReplayInfo(session: ReturnType<typeof listPiSessions>[number]): ReplaySessionInfo {
+  return {
+    runtime: 'pi' as const,
     sessionId: session.sessionId,
     projectPath: session.projectPath,
     projectName: session.projectName,
@@ -152,26 +174,39 @@ export function listReplaySessionPage(options: ReplaySessionPageOptions): Replay
   const sourceLimit = query ? undefined : cursor + limit + 1;
   const claudePage = listClaudeSessionPage({
     projectPaths: workspaces,
-    limit: options.runtime === 'codex' ? 0 : sourceLimit,
+    limit: options.runtime === 'codex' || options.runtime === 'pi' ? 0 : sourceLimit,
   });
   const codexPage = listCodexSessionPage({
     projectPaths: workspaces,
-    limit: options.runtime === 'claude_code' ? 0 : sourceLimit,
+    limit: options.runtime === 'claude_code' || options.runtime === 'pi' ? 0 : sourceLimit,
+  });
+  const piPage = listPiSessionPage({
+    projectPaths: workspaces,
+    limit: options.runtime === 'claude_code' || options.runtime === 'codex' ? 0 : sourceLimit,
   });
   const candidates = [
     ...claudePage.sessions.map(toClaudeReplayInfo),
     ...codexPage.sessions.map(toCodexReplayInfo),
+    ...piPage.sessions.map(toPiReplayInfo),
   ]
     .sort(compareReplaySessions)
     .filter((session) => matchesReplayQuery(session, query));
-  const total = query ? candidates.length : claudePage.total + codexPage.total;
+  const workspaceTotal = claudePage.total + codexPage.total + piPage.total;
+  const runtimeTotal = options.runtime === 'claude_code'
+    ? claudePage.total
+    : options.runtime === 'codex'
+    ? codexPage.total
+    : options.runtime === 'pi'
+    ? piPage.total
+    : workspaceTotal;
+  const total = query ? candidates.length : runtimeTotal;
   const sessions = candidates.slice(cursor, cursor + limit);
   const hasLookahead = candidates.length > cursor + limit;
 
   return {
     sessions,
     total,
-    workspaceTotal: claudePage.total + codexPage.total,
+    workspaceTotal,
     nextCursor: hasLookahead ? cursor + limit : null,
   };
 }
@@ -182,7 +217,7 @@ export function getReplaySessionDetail(
 ): ReplaySessionDetail | null {
   const runtimes: AssistantRuntime[] = runtime
     ? [runtime]
-    : ['codex', 'claude_code'];
+    : ['pi', 'codex', 'claude_code'];
 
   for (const currentRuntime of runtimes) {
     if (currentRuntime === 'claude_code') {
@@ -203,6 +238,28 @@ export function getReplaySessionDetail(
           version: session.info.version,
           model: session.info.model,
           messageCount: session.info.userMessageCount + session.info.assistantMessageCount,
+          createdAt: session.info.createdAt,
+          updatedAt: session.info.updatedAt,
+        },
+        messages: toReplayMessages(session.info.sessionId, session.messages),
+      };
+    }
+
+    if (currentRuntime === 'pi') {
+      const session = parsePiSession(sessionId);
+      if (!session) continue;
+      return {
+        info: {
+          id: session.info.sessionId,
+          runtime: 'pi',
+          title: session.info.title || session.info.preview || `Session ${session.info.sessionId.slice(0, 8)}`,
+          projectPath: session.info.projectPath,
+          projectName: session.info.projectName,
+          cwd: session.info.cwd,
+          gitBranch: session.info.gitBranch,
+          version: session.info.version,
+          model: session.info.model,
+          messageCount: session.messages.length,
           createdAt: session.info.createdAt,
           updatedAt: session.info.updatedAt,
         },
