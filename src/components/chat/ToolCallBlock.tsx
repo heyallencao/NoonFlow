@@ -37,7 +37,7 @@ function getToolCategory(name: string): 'read' | 'write' | 'bash' | 'search' | '
   if (lower === 'write' || lower === 'edit' || lower === 'writefile' || lower === 'write_file'
     || lower === 'create_file' || lower === 'createfile'
     || lower === 'notebookedit' || lower === 'notebook_edit') return 'write';
-  if (lower === 'bash' || lower === 'execute' || lower === 'run' || lower === 'shell'
+  if (lower === 'bash' || lower === 'exec' || lower === 'execute' || lower === 'run' || lower === 'shell'
     || lower === 'execute_command' || lower === 'exec_command') return 'bash';
   if (lower === 'search' || lower === 'glob' || lower === 'grep'
     || lower === 'find_files' || lower === 'search_files'
@@ -56,7 +56,10 @@ function getToolIcon(category: ReturnType<typeof getToolCategory>): IconSvgEleme
 }
 
 function getToolSummary(name: string, input: unknown, category: ReturnType<typeof getToolCategory>): string {
-  const inp = input as Record<string, unknown> | undefined;
+  const inp = input && typeof input === 'object'
+    ? input as Record<string, unknown>
+    : undefined;
+  const rawStringInput = typeof input === 'string' ? input.trim() : '';
   const normalizedName = name.trim().toLowerCase();
 
   if (normalizedName === 'apply_patch' || normalizedName === 'applypatch') {
@@ -67,19 +70,19 @@ function getToolSummary(name: string, input: unknown, category: ReturnType<typeo
     }
   }
 
-  if (!inp) return name;
+  if (!inp && !rawStringInput) return name;
 
   switch (category) {
     case 'read': {
-      const path = (inp.file_path || inp.path || inp.filePath || '') as string;
+      const path = (inp?.file_path || inp?.path || inp?.filePath || '') as string;
       return path ? extractFilename(path) : name;
     }
     case 'write': {
-      const path = (inp.file_path || inp.path || inp.filePath || '') as string;
+      const path = (inp?.file_path || inp?.path || inp?.filePath || '') as string;
       return path ? extractFilename(path) : name;
     }
     case 'bash': {
-      const cmd = (inp.command || inp.cmd || '') as string;
+      const cmd = rawStringInput || String(inp?.command || inp?.cmd || '');
       if (cmd) {
         const truncated = cmd.length > 80 ? cmd.slice(0, 77) + '...' : cmd;
         return truncated;
@@ -87,7 +90,7 @@ function getToolSummary(name: string, input: unknown, category: ReturnType<typeo
       return name;
     }
     case 'search': {
-      const pattern = (inp.pattern || inp.query || inp.glob || '') as string;
+      const pattern = (inp?.pattern || inp?.query || inp?.glob || '') as string;
       return pattern ? `"${pattern}"` : name;
     }
     default:
@@ -256,8 +259,12 @@ export function ToolCallBlock({
       }
 
       case 'bash': {
-        const inp = input as Record<string, unknown> | undefined;
-        const command = (inp?.command || inp?.cmd || '') as string;
+        const inp = input && typeof input === 'object'
+          ? input as Record<string, unknown>
+          : undefined;
+        const command = typeof input === 'string'
+          ? input
+          : String(inp?.command || inp?.cmd || '');
         return (
           <div className="space-y-2">
             {command && (

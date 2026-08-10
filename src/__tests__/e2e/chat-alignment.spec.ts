@@ -181,3 +181,138 @@ test('reasoning, tool and body blocks stay aligned and reasoning code is smaller
   expect(Math.abs((toolBox?.x ?? 0) - (bodyBox?.x ?? 0))).toBeLessThanOrEqual(28);
   expect(codeFontSize).toBeLessThanOrEqual(10.5);
 });
+
+test('consecutive tool-only assistant messages stay visually compact', async ({ page }) => {
+  const sessionId = 'chat-tool-density-check';
+  const session = { ...buildSession(), id: sessionId, title: 'Tool Density Check' };
+  const toolMessage = (id: string, command: string, createdAt: string) => ({
+    id: `msg-${id}`,
+    session_id: sessionId,
+    role: 'assistant',
+    content: JSON.stringify([
+      {
+        type: 'tool_use',
+        id,
+        name: 'exec_command',
+        input: { command },
+      },
+      {
+        type: 'tool_result',
+        tool_use_id: id,
+        content: '',
+        is_error: false,
+      },
+    ]),
+    created_at: createdAt,
+    token_usage: null,
+  });
+
+  await page.route(`**/api/chat/sessions/${sessionId}`, async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ session, recovery: null, runtimeState: null }),
+    });
+  });
+
+  await page.route(`**/api/chat/sessions/${sessionId}/messages?**`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        messages: [
+          {
+            id: 'msg-user-density',
+            session_id: sessionId,
+            role: 'user',
+            content: 'Run two commands',
+            created_at: '2026-03-23T10:00:00.000Z',
+            token_usage: null,
+          },
+          toolMessage('tool-density-1', 'echo compact-one', '2026-03-23T10:00:01.000Z'),
+          toolMessage('tool-density-2', 'echo compact-two', '2026-03-23T10:00:02.000Z'),
+        ],
+        hasMore: false,
+      }),
+    });
+  });
+
+  await page.route('**/api/chat/sessions?type=all**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ sessions: [session] }),
+    });
+  });
+
+  await page.goto(`/chat/${sessionId}`);
+
+  const firstCommand = page.getByText('echo compact-one', { exact: true });
+  const secondCommand = page.getByText('echo compact-two', { exact: true });
+  await expect(firstCommand).toBeVisible();
+  await expect(secondCommand).toBeVisible();
+
+  const firstBox = await firstCommand.boundingBox();
+  const secondBox = await secondCommand.boundingBox();
+  expect(firstBox).not.toBeNull();
+  expect(secondBox).not.toBeNull();
+  expect((secondBox?.y ?? 0) - (firstBox?.y ?? 0)).toBeLessThanOrEqual(44);
+});
+
+test('custom exec calls render the raw command as a command row', async ({ page }) => {
+  const sessionId = 'chat-exec-alias-check';
+  const session = { ...buildSession(), id: sessionId, title: 'Exec Alias Check' };
+  const command = 'printf compact-exec-alias';
+
+  await page.route(`**/api/chat/sessions/${sessionId}`, async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ session, recovery: null, runtimeState: null }),
+    });
+  });
+
+  await page.route(`**/api/chat/sessions/${sessionId}/messages?**`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        messages: [
+          {
+            id: 'msg-exec-alias',
+            session_id: sessionId,
+            role: 'assistant',
+            content: JSON.stringify([
+              { type: 'tool_use', id: 'tool-exec-alias', name: 'exec', input: command },
+              { type: 'tool_result', tool_use_id: 'tool-exec-alias', content: '', is_error: false },
+            ]),
+            created_at: '2026-03-23T10:00:01.000Z',
+            token_usage: null,
+          },
+        ],
+        hasMore: false,
+      }),
+    });
+  });
+
+  await page.route('**/api/chat/sessions?type=all**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ sessions: [session] }),
+    });
+  });
+
+  await page.goto(`/chat/${sessionId}`);
+
+  await expect(page.getByText(command, { exact: true })).toBeVisible();
+  await expect(page.getByText('exec', { exact: true })).toHaveCount(0);
+});

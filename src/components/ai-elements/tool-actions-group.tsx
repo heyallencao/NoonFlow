@@ -52,7 +52,7 @@ function getToolCategory(name: string): ToolCategory {
     lower === 'notebookedit' || lower === 'notebook_edit'
   ) return 'write';
   if (
-    lower === 'bash' || lower === 'execute' || lower === 'run' ||
+    lower === 'bash' || lower === 'exec' || lower === 'execute' || lower === 'run' ||
     lower === 'shell' || lower === 'execute_command' || lower === 'exec_command'
   ) return 'bash';
   if (
@@ -120,7 +120,10 @@ function buildFileListSummary(paths: string[]): string {
 }
 
 function getToolSummary(name: string, input: unknown, category: ToolCategory): string {
-  const inp = input as Record<string, unknown> | undefined;
+  const inp = input && typeof input === 'object'
+    ? input as Record<string, unknown>
+    : undefined;
+  const rawStringInput = typeof input === 'string' ? input.trim() : '';
   const normalizedName = name.trim().toLowerCase();
 
   if (normalizedName === 'apply_patch' || normalizedName === 'applypatch') {
@@ -129,21 +132,21 @@ function getToolSummary(name: string, input: unknown, category: ToolCategory): s
     if (patchSummary) return patchSummary;
   }
 
-  if (!inp) return name;
+  if (!inp && !rawStringInput) return name;
 
   switch (category) {
     case 'read':
     case 'write': {
-      const path = (inp.file_path || inp.path || inp.filePath || '') as string;
+      const path = (inp?.file_path || inp?.path || inp?.filePath || '') as string;
       return path ? extractFilename(path) : name;
     }
     case 'bash': {
-      const cmd = (inp.command || inp.cmd || '') as string;
+      const cmd = rawStringInput || String(inp?.command || inp?.cmd || '');
       if (cmd) return cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd;
       return name;
     }
     case 'search': {
-      const pattern = (inp.pattern || inp.query || inp.glob || '') as string;
+      const pattern = (inp?.pattern || inp?.query || inp?.glob || '') as string;
       return pattern ? `"${pattern.length > 50 ? pattern.slice(0, 47) + '...' : pattern}"` : name;
     }
     default:
@@ -214,7 +217,9 @@ function ToolDetailsView({ tool, category, filePath }: {
   category: ToolCategory;
   filePath: string;
 }) {
-  const input = tool.input as Record<string, unknown>;
+  const input = tool.input && typeof tool.input === 'object'
+    ? tool.input as Record<string, unknown>
+    : {};
   const result = getRenderableToolResult(tool.result);
 
   // For Write/Edit tools, show diff
@@ -230,7 +235,9 @@ function ToolDetailsView({ tool, category, filePath }: {
 
   // For Bash tools, show command and output
   if (category === 'bash') {
-    const command = String(input.command || input.cmd || '');
+    const command = typeof tool.input === 'string'
+      ? tool.input
+      : String(input.command || input.cmd || '');
     return (
       <div className="rounded-md border border-border bg-background overflow-hidden">
         <div className="bg-muted/50 px-3 py-1.5 text-xs font-medium text-muted-foreground border-b border-border">

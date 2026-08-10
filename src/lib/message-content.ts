@@ -502,6 +502,39 @@ export function parseAssistantMessageContent(content: string): ParsedAssistantMe
   };
 }
 
+export function isToolOnlyAssistantBlocks(
+  blocks: MessageContentBlock[],
+  showReasoning = false,
+): boolean {
+  let hasToolUse = false;
+
+  for (const block of blocks) {
+    if (block.type === 'tool_use') {
+      hasToolUse = true;
+      continue;
+    }
+    if (block.type === 'tool_result') {
+      continue;
+    }
+    if (block.type === 'reasoning' && !showReasoning) {
+      continue;
+    }
+    if ((block.type === 'text' || block.type === 'reasoning') && block.text.trim().length === 0) {
+      continue;
+    }
+    return false;
+  }
+
+  return hasToolUse;
+}
+
+export function isToolOnlyAssistantContent(
+  content: string,
+  showReasoning = false,
+): boolean {
+  return isToolOnlyAssistantBlocks(parseAssistantMessageContent(content).blocks, showReasoning);
+}
+
 export function pairToolBlocks(tools: ParsedToolBlock[]): Array<{
   name: string;
   input: unknown;

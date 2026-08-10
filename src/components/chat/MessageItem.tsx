@@ -26,7 +26,11 @@ import { BatchPlanInlinePreview } from './batch-image-gen/BatchPlanInlinePreview
 import { WidgetRenderer } from './WidgetRenderer';
 import { WidgetErrorBoundary } from './WidgetErrorBoundary';
 import { buildReferenceImages } from '@/lib/image-ref-store';
-import { pairToolBlocks, parseAssistantMessageContent } from '@/lib/message-content';
+import {
+  isToolOnlyAssistantBlocks,
+  pairToolBlocks,
+  parseAssistantMessageContent,
+} from '@/lib/message-content';
 import { parseDBDate } from '@/lib/utils';
 import { MessageReasoning } from './MessageReasoning';
 import { buildDiffHunks } from '@/components/ai-elements/file-diff-utils';
@@ -736,6 +740,7 @@ export const MessageItem = memo(function MessageItem({
     hour: '2-digit',
     minute: '2-digit',
   });
+  const isToolOnlyAssistant = !isUser && isToolOnlyAssistantBlocks(blocks, showReasoning);
 
   const handleQuickCopy = useCallback(async () => {
     if (!displayText) return;
@@ -877,11 +882,13 @@ export const MessageItem = memo(function MessageItem({
       </MessageContent>
 
       {/* Footer with copy, timestamp and token usage */}
-      <div className={`flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 ${isUser ? 'justify-end' : ''}`}>
-        {!isUser && <span className="text-xs text-muted-foreground/50">{timestamp}</span>}
-        {!isUser && tokenUsage && <TokenUsageDisplay usage={tokenUsage} />}
-        {displayText && <CopyButton text={displayText} />}
-      </div>
+      {!isToolOnlyAssistant && (
+        <div className={`flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 ${isUser ? 'justify-end' : ''}`}>
+          {!isUser && <span className="text-xs text-muted-foreground/50">{timestamp}</span>}
+          {!isUser && tokenUsage && <TokenUsageDisplay usage={tokenUsage} />}
+          {displayText && <CopyButton text={displayText} />}
+        </div>
+      )}
     </AIMessage>
   );
 });

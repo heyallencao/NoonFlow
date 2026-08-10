@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   buildAssistantMessageContent,
+  isToolOnlyAssistantContent,
   parseAssistantMessageContent,
   serializeMessageContentBlocks,
 } from '../../lib/message-content';
@@ -71,5 +72,35 @@ describe('reasoning message content', () => {
 
     const content = serializeMessageContentBlocks(blocks);
     assert.equal(content, 'Plain response only.');
+  });
+
+  it('detects tool-only assistant content for compact timeline layout', () => {
+    const content = serializeMessageContentBlocks([
+      { type: 'tool_use', id: 'tool-1', name: 'exec', input: 'pwd' },
+      { type: 'tool_result', tool_use_id: 'tool-1', content: '/tmp' },
+    ]);
+
+    assert.equal(isToolOnlyAssistantContent(content), true);
+  });
+
+  it('does not compact assistant content that includes visible narrative text', () => {
+    const content = serializeMessageContentBlocks([
+      { type: 'tool_use', id: 'tool-1', name: 'exec', input: 'pwd' },
+      { type: 'tool_result', tool_use_id: 'tool-1', content: '/tmp' },
+      { type: 'text', text: 'Command complete.' },
+    ]);
+
+    assert.equal(isToolOnlyAssistantContent(content), false);
+  });
+
+  it('treats reasoning as visible content only when reasoning is shown', () => {
+    const content = serializeMessageContentBlocks([
+      { type: 'reasoning', text: 'I should inspect the current directory.' },
+      { type: 'tool_use', id: 'tool-1', name: 'exec', input: 'pwd' },
+      { type: 'tool_result', tool_use_id: 'tool-1', content: '/tmp' },
+    ]);
+
+    assert.equal(isToolOnlyAssistantContent(content, false), true);
+    assert.equal(isToolOnlyAssistantContent(content, true), false);
   });
 });

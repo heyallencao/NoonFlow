@@ -18,6 +18,7 @@ import {
 } from '@/components/ai-elements/conversation';
 import { MessageItem } from './MessageItem';
 import { StreamingMessage } from './StreamingMessage';
+import { isToolOnlyAssistantContent } from '@/lib/message-content';
 
 const GLOBAL_SCROLL_MEMORY_KEY = '__noonflowChatScrollMemory__' as const;
 const GLOBAL_COLLAPSE_MEMORY_KEY = '__noonflowChatLoadedHistoryCollapse__' as const;
@@ -326,6 +327,13 @@ export function MessageList({
     }
     return messages.slice(hiddenLoadedCount);
   }, [hiddenLoadedCount, messages, shouldCollapseLoadedHistory]);
+  const toolOnlyAssistantMessages = useMemo(
+    () => visibleMessages.map((message) => (
+      message.role === 'assistant'
+      && isToolOnlyAssistantContent(message.content, showReasoning)
+    )),
+    [showReasoning, visibleMessages],
+  );
 
   const handleLoadMore = () => {
     if (messages.length > 0) {
@@ -373,7 +381,7 @@ export function MessageList({
           />
         )}
 
-        {visibleMessages.map((message) => {
+        {visibleMessages.map((message, index) => {
           const isMatch = hasActiveSearch && Boolean(matchedMessageIds?.has(message.id));
           const activeOccurrenceIndex = activeMatchMessageId === message.id
             ? activeMatchOccurrenceIndex
@@ -384,11 +392,13 @@ export function MessageList({
             && message.role === 'assistant'
             && message.client_message_id === activeStreamingClientMessageId
           );
+          const followsToolOnlyAssistant = toolOnlyAssistantMessages[index]
+            && toolOnlyAssistantMessages[index - 1];
           return (
             <div
               key={message.id}
               id={`msg-${message.id}`}
-              className="rounded-lg"
+              className={`rounded-lg ${followsToolOnlyAssistant ? '-mt-4' : ''}`}
             >
               <div id={isActiveStreamingAssistant ? 'msg-streaming' : undefined}>
                 <MessageItem
