@@ -85,6 +85,28 @@ describe('chat persistence flusher', () => {
     ]);
   });
 
+  it('still finalizes after an immediate rollback produces an empty snapshot', async () => {
+    let snapshot: MessageContentBlock[] = [];
+    const persisted: Array<{ text: string; isFinal: boolean }> = [];
+    const flusher = createCheckpointFlusher({
+      getSnapshot: () => snapshot,
+      persistSnapshot: async (entry) => {
+        persisted.push({
+          text: entry.blocks.map((block) => ('text' in block ? block.text : '')).join(''),
+          isFinal: entry.isFinal,
+        });
+      },
+    });
+
+    flusher.markDirty({ immediate: true });
+    snapshot = [{ type: 'text', text: 'recovered answer' }];
+    await flusher.finalize('completed');
+
+    assert.deepEqual(persisted, [
+      { text: 'recovered answer', isFinal: true },
+    ]);
+  });
+
   it('coalesces high-frequency text deltas into bounded checkpoint writes', async () => {
     let text = '';
     let snapshot: MessageContentBlock[] = [{ type: 'text', text }];

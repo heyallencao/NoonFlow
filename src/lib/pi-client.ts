@@ -7,7 +7,6 @@ import { getUploadedFilePaths, buildPromptWithHistory, formatSSE } from '@/lib/c
 import { isDangerouslySkipPermissionsEnabled } from '@/lib/assistant-permissions';
 import { getSetting } from '@/lib/db-session';
 import { getShellEnvironment } from '@/lib/environment';
-import { RuntimeActivityAdapter } from '@/lib/agent-runtime/sdk-adapter';
 import { splitPiModelSelection } from '@/lib/pi-model-selection';
 import { findPiBinary, getExpandedPath } from '@/lib/platform';
 import {
@@ -355,7 +354,10 @@ export function streamPi(options: PiStreamOptions): ReadableStream<string> {
         let promptAccepted = false;
         let settled = false;
         let pendingAssistantError: string | null = null;
-        const activityAdapter = new RuntimeActivityAdapter('pi', options.sessionId);
+        let assistantAttemptCheckpoint: {
+          emittedToolIds: Set<string>;
+          toolOutputById: Map<string, string>;
+        } | null = null;
 
         const history = resumeSessionId
           ? undefined
@@ -369,10 +371,30 @@ export function streamPi(options: PiStreamOptions): ReadableStream<string> {
           stderrBuffer = `${stderrBuffer}${chunk}`.slice(-8000);
         });
 
-        const handleRecord = (record: PiRpcRecord) => {
-          for (const activity of activityAdapter.adapt(record)) {
-            emit({ type: 'activity.updated', data: JSON.stringify(activity) });
+        const beginAssistantAttempt = () => {
+          if (assistantAttemptCheckpoint) return;
+          assistantAttemptCheckpoint = {
+            emittedToolIds: new Set(emittedToolIds),
+            toolOutputById: new Map(toolOutputById),
+          };
+          emit({ type: 'assistant_attempt_start', data: '' });
+        };
+
+        const resetAssistantAttempt = () => {
+          if (!assistantAttemptCheckpoint) return;
+          emittedToolIds.clear();
+          for (const id of assistantAttemptCheckpoint.emittedToolIds) {
+            emittedToolIds.add(id);
           }
+          toolOutputById.clear();
+          for (const [id, output] of assistantAttemptCheckpoint.toolOutputById) {
+            toolOutputById.set(id, output);
+          }
+          assistantAttemptCheckpoint = null;
+          emit({ type: 'assistant_attempt_reset', data: '' });
+        };
+
+        const handleRecord = (record: PiRpcRecord) => {
           const type = typeof record.type === 'string' ? record.type : '';
           if (type === 'response') {
             const id = typeof record.id === 'string' ? record.id : '';
@@ -402,9 +424,15 @@ export function streamPi(options: PiStreamOptions): ReadableStream<string> {
             emit({ type: 'status', data: 'Pi is working...' });
             return;
           }
+          if (type === 'message_start') {
+            const message = asRecord(record.message);
+            if (message?.role === 'assistant') beginAssistantAttempt();
+            return;
+          }
           if (type === 'message_update') {
             const event = asRecord(record.assistantMessageEvent);
             if (event?.type === 'toolcall_end') {
+              beginAssistantAttempt();
               const toolCall = asRecord(event.toolCall);
               const id = typeof toolCall?.id === 'string' ? toolCall.id : '';
               if (id && !emittedToolIds.has(id)) {
@@ -418,8 +446,14 @@ export function streamPi(options: PiStreamOptions): ReadableStream<string> {
             }
             const delta = typeof event?.delta === 'string' ? event.delta : '';
             if (!delta) return;
-            if (event?.type === 'text_delta') emit({ type: 'text', data: delta });
-            if (event?.type === 'thinking_delta') emit({ type: 'reasoning', data: delta });
+            if (event?.type === 'text_delta') {
+              beginAssistantAttempt();
+              emit({ type: 'text', data: delta });
+            }
+            if (event?.type === 'thinking_delta') {
+              beginAssistantAttempt();
+              emit({ type: 'reasoning', data: delta });
+            }
             return;
           }
           if (type === 'message_end') {
@@ -435,6 +469,7 @@ export function streamPi(options: PiStreamOptions): ReadableStream<string> {
                   : extractTextContent(messageRecord.content) || 'Pi model request failed';
               } else {
                 pendingAssistantError = null;
+                assistantAttemptCheckpoint = null;
               }
             }
             return;
@@ -485,6 +520,7 @@ export function streamPi(options: PiStreamOptions): ReadableStream<string> {
             return;
           }
           if (type === 'auto_retry_start') {
+            resetAssistantAttempt();
             emit({ type: 'status', data: `Pi is retrying (attempt ${asFiniteNumber(record.attempt)})...` });
             return;
           }

@@ -324,6 +324,60 @@ describe('SDKAdapter', () => {
     assert.deepEqual(timeout, { toolName: 'Read', elapsedSeconds: 9 });
   });
 
+  it('restores the previous stream checkpoint before consuming a retried assistant attempt', async () => {
+    let visibleText = '';
+    let attemptStarts = 0;
+    let attemptResets = 0;
+
+    const result = await consumeSSEStream(
+      createSSEReader([
+        { type: 'text', data: 'Tool completed. ' },
+        { type: 'assistant_attempt_start', data: '' },
+        { type: 'text', data: 'Stale partial answer' },
+        { type: 'assistant_attempt_reset', data: '' },
+        { type: 'assistant_attempt_start', data: '' },
+        { type: 'text', data: 'Recovered answer' },
+        { type: 'done', data: '' },
+      ]),
+      {
+        onText: (accumulated) => {
+          visibleText = accumulated;
+        },
+        onReasoning: () => {},
+        onAssistantAttemptStart: () => {
+          attemptStarts += 1;
+        },
+        onAssistantAttemptReset: (checkpoint) => {
+          attemptResets += 1;
+          visibleText = checkpoint.text;
+        },
+        onToolUse: () => {},
+        onToolResult: () => {},
+        onToolOutput: () => {},
+        onToolProgress: () => {},
+        onStatus: () => {},
+        onResult: () => {},
+        onPermissionRequest: () => {},
+        onToolTimeout: () => {},
+        onModeChanged: () => {},
+        onTaskUpdate: () => {},
+        onUserPersisted: () => {},
+        onAssistantPersisted: () => {},
+        onError: () => {},
+      },
+      {
+        sessionId: 'session-retried-attempt',
+        source: 'sdk',
+        emitToEventBus: false,
+      },
+    );
+
+    assert.equal(result.accumulated, 'Tool completed. Recovered answer');
+    assert.equal(visibleText, 'Tool completed. Recovered answer');
+    assert.equal(attemptStarts, 2);
+    assert.equal(attemptResets, 1);
+  });
+
   it('keeps consuming persisted ack events that arrive after done', async () => {
     const users: Array<{ clientMessageId: string; messageId: string }> = [];
     const persisted: Array<{ clientMessageId: string; messageId: string; revision: number }> = [];
@@ -544,7 +598,7 @@ describe('RuntimeActivityAdapter', () => {
     assert.equal(stopped?.startedAt, 4_000);
   });
 
-  it('maps Codex collaboration items and Pi agent-level events to the same contract', () => {
+  it('maps Codex collaboration items to the shared child activity contract', () => {
     let codexNow = 5_000;
     const codex = new RuntimeActivityAdapter('codex', 'session-codex', () => codexNow);
     const [codexActivity] = codex.adapt({
@@ -610,56 +664,8 @@ describe('RuntimeActivityAdapter', () => {
     assert.equal(terminalUpdates[1]?.summary, 'Review failed');
     assert.equal(terminalUpdates[1]?.startedAt, 5_000);
 
-    let piNow = 6_000;
-    const pi = new RuntimeActivityAdapter('pi', 'session-pi', () => piNow);
-    const [piStarted] = pi.adapt({ type: 'agent_start' });
-    assert.deepEqual(piStarted, {
-      id: 'session-pi:pi-agent',
-      runtime: 'pi',
-      kind: 'agent',
-      title: 'Pi agent',
-      status: 'running',
-      startedAt: 6_000,
-      updatedAt: 6_000,
-    });
-    assert.equal('parentId' in (piStarted ?? {}), false);
-
-    piNow = 7_000;
-    const [passEnded] = pi.adapt({ type: 'agent_end', willRetry: true });
-    assert.equal(passEnded?.status, 'waiting');
-
-    piNow = 7_500;
-    const [retrying] = pi.adapt({ type: 'auto_retry_start', attempt: 2 });
-    assert.equal(retrying?.status, 'waiting');
-    assert.match(retrying?.summary ?? '', /2/);
-
-    piNow = 8_000;
-    const [retryStarted] = pi.adapt({ type: 'agent_start' });
-    assert.equal(retryStarted?.status, 'running');
-    assert.deepEqual(pi.adapt({
-      type: 'message_end',
-      message: { role: 'assistant', stopReason: 'stop' },
-    }), []);
-    const [retryEnded] = pi.adapt({ type: 'auto_retry_end', success: true, attempt: 2 });
-    assert.equal(retryEnded?.status, 'running');
-
-    piNow = 8_500;
-    const [settled] = pi.adapt({ type: 'agent_settled' });
-    assert.equal(settled?.status, 'completed');
-    assert.equal(settled?.startedAt, 6_000);
-
-    const failedPi = new RuntimeActivityAdapter('pi', 'session-pi-failed', () => 9_000);
-    failedPi.adapt({ type: 'agent_start' });
-    assert.deepEqual(failedPi.adapt({
-      type: 'message_end',
-      message: { role: 'assistant', stopReason: 'error', errorMessage: 'final provider error' },
-    }), []);
-    const [failedPassEnded] = failedPi.adapt({ type: 'agent_end', willRetry: false });
-    assert.equal(failedPassEnded?.status, 'running');
-    const [failedSettled] = failedPi.adapt({ type: 'agent_settled' });
-    assert.equal(failedSettled?.status, 'failed');
-    assert.equal(failedSettled?.summary, 'final provider error');
   });
+
 });
 
 describe('Orchestrator', () => {

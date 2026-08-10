@@ -101,11 +101,10 @@ function normalizeClaudeStatus(value: unknown): ChildActivityStatus {
 export class RuntimeActivityAdapter {
   private readonly activities = new Map<string, ChildActivity>();
   private backgroundTaskIds = new Set<string>();
-  private piPendingError: string | undefined;
 
   constructor(
-    private readonly runtime: AssistantRuntime,
-    private readonly sessionId: string,
+    private readonly runtime: Exclude<AssistantRuntime, 'pi'>,
+    _sessionId: string,
     private readonly now: () => number = Date.now,
   ) {}
 
@@ -113,8 +112,7 @@ export class RuntimeActivityAdapter {
     const event = asRecord(rawEvent);
     if (!event) return [];
     if (this.runtime === 'claude_code') return this.adaptClaude(event);
-    if (this.runtime === 'codex') return this.adaptCodex(event);
-    return this.adaptPi(event);
+    return this.adaptCodex(event);
   }
 
   stopRunning(status: Extract<ChildActivityStatus, 'failed' | 'stopped'>): ChildActivity[] {
@@ -226,73 +224,6 @@ export class RuntimeActivityAdapter {
     return updates;
   }
 
-  private adaptPi(event: Record<string, unknown>): ChildActivity[] {
-    const type = asString(event.type);
-    if (type === 'message_end') {
-      const message = asRecord(event.message);
-      if (message?.role === 'assistant') {
-        this.piPendingError = message.stopReason === 'error'
-          ? asString(message.errorMessage) || 'Pi model request failed'
-          : undefined;
-      }
-      return [];
-    }
-    const supported = new Set([
-      'agent_start',
-      'agent_end',
-      'agent_settled',
-      'auto_retry_start',
-      'auto_retry_end',
-      'compaction_start',
-      'compaction_end',
-    ]);
-    if (!supported.has(type)) return [];
-    const id = `${this.sessionId}:pi-agent`;
-    const previous = this.activities.get(id);
-    const now = this.now();
-    let status: ChildActivityStatus = previous?.status ?? 'running';
-    let summary = previous?.summary;
-    if (type === 'agent_start') {
-      status = 'running';
-      summary = undefined;
-    } else if (type === 'agent_end') {
-      status = event.willRetry === true ? 'waiting' : 'running';
-      summary = event.willRetry === true ? 'Waiting to retry' : 'Agent pass finished';
-    } else if (type === 'agent_settled') {
-      status = this.piPendingError ? 'failed' : 'completed';
-      summary = this.piPendingError || 'Agent settled';
-    } else if (type === 'auto_retry_start') {
-      status = 'waiting';
-      const attempt = typeof event.attempt === 'number' ? event.attempt : undefined;
-      summary = attempt ? `Retrying (attempt ${attempt})` : 'Retrying';
-    } else if (type === 'compaction_start') {
-      status = 'waiting';
-      summary = 'Compacting context';
-    } else if (type === 'compaction_end') {
-      status = 'running';
-      summary = event.aborted === true || event.errorMessage ? 'Context compaction failed' : 'Context compacted';
-    } else if (type === 'auto_retry_end') {
-      if (event.success === false) {
-        this.piPendingError = asString(event.finalError) || this.piPendingError || 'Pi retry failed';
-        status = 'waiting';
-        summary = this.piPendingError;
-      } else {
-        this.piPendingError = undefined;
-        status = 'running';
-        summary = 'Retry finished';
-      }
-    }
-    return [this.upsert({
-      id,
-      runtime: 'pi',
-      kind: 'agent',
-      title: 'Pi agent',
-      status,
-      ...(summary ? { summary } : {}),
-      startedAt: previous?.startedAt ?? now,
-      updatedAt: now,
-    })];
-  }
 }
 
 function normalizeTokenUsage(value: {
@@ -342,6 +273,18 @@ export class SDKAdapter {
           type: 'message.reasoning',
           metadata,
           content: event.data,
+        };
+
+      case 'assistant_attempt_start':
+        return {
+          type: 'message.attempt.started',
+          metadata,
+        };
+
+      case 'assistant_attempt_reset':
+        return {
+          type: 'message.attempt.reset',
+          metadata,
         };
 
       case 'tool_use': {

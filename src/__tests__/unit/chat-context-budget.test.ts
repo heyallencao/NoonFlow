@@ -49,6 +49,21 @@ process.stdin.on('data', (chunk) => {
     if (command.type === 'prompt') {
       send({ type: 'response', id: command.id, success: true });
       send({ type: 'agent_start' });
+      if (process.env.NOONFLOW_PI_SCENARIO === 'partial-output-retry') {
+        send({ type: 'message_start', message: { role: 'assistant' } });
+        send({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'stale route partial' } });
+        send({ type: 'message_end', message: { role: 'assistant', stopReason: 'error', errorMessage: 'Anthropic stream ended before message_stop', content: [{ type: 'text', text: 'stale route partial' }], usage: { input: 1, output: 2 } } });
+        send({ type: 'agent_end', messages: [], willRetry: true });
+        send({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 0, errorMessage: 'Anthropic stream ended before message_stop' });
+        send({ type: 'agent_start' });
+        send({ type: 'message_start', message: { role: 'assistant' } });
+        send({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'recovered route answer' } });
+        send({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'recovered route answer' }], usage: { input: 2, output: 3 } } });
+        send({ type: 'auto_retry_end', success: true, attempt: 1 });
+        send({ type: 'agent_end', messages: [], willRetry: false });
+        send({ type: 'agent_settled' });
+        continue;
+      }
       send({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Pi route answer' } });
       send({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Pi route answer' }], usage: { input: 4, output: 3 } } });
       send({ type: 'agent_settled' });
@@ -110,13 +125,13 @@ async function prepareNativeCodexRoute(scenario: string, threadId: string): Prom
   clearShellEnvCache();
 }
 
-function prepareNativePiRoute(): void {
+function prepareNativePiRoute(scenario = 'normal'): void {
   fs.rmSync(fakePiCapturePath, { force: true });
   piClient.piClientPlatform.findPiBinary = () => process.execPath;
   piClient.piClientPlatform.spawn = (_command, args, options) => spawn(
     process.execPath,
     [fakePiPath, ...args],
-    { ...options, env: { ...options.env, NOONFLOW_PI_CAPTURE: fakePiCapturePath } },
+    { ...options, env: { ...options.env, NOONFLOW_PI_CAPTURE: fakePiCapturePath, NOONFLOW_PI_SCENARIO: scenario } },
   );
 }
 
@@ -408,6 +423,41 @@ describe('/api/chat context budget guard', () => {
       warnings.some((args) => args[0] === '[chat API] emergency conversation context'),
       false,
     );
+  });
+
+  it('persists only the successful Pi retry attempt after rolling back partial output', async () => {
+    prepareNativePiRoute('partial-output-retry');
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'noonflow-pi-retry-workspace-'));
+    const session = db.createSession(
+      'Pi Retry Persistence',
+      '',
+      '',
+      workspaceDir,
+      'code',
+      '',
+      'chat',
+      'pi',
+    );
+
+    const response = await route.POST(new Request('http://localhost/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: session.id,
+        content: 'retry and persist once',
+        client_message_id: 'msg-pi-retry-persistence',
+        assistant_runtime: 'pi',
+      }),
+    }) as never);
+    assert.equal(response.status, 200);
+    const payload = await readStringStream(response.body as ReadableStream<string> | null);
+    assert.equal(parseSSEEvents(payload).some((event) => event.type === 'error'), false);
+
+    const assistant = db.getMessages(session.id).messages.filter((message) => message.role === 'assistant').at(-1);
+    assert.ok(assistant);
+    assert.match(assistant.content, /recovered route answer/);
+    assert.doesNotMatch(assistant.content, /stale route partial/);
+    assert.equal(assistant.status, 'completed');
   });
 
   it('loads capped DB history only after native Pi resume fails', async () => {

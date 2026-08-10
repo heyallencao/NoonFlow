@@ -48,12 +48,24 @@ interface ActiveStream {
   blockSeq: number;
   toolOutputAccumulated: string;
   toolTimeoutInfo: { toolName: string; elapsedSeconds: number } | null;
+  assistantAttemptCheckpoint: StreamAttemptCheckpoint | null;
   isIdleTimeout: boolean;
   backendStopRequested: boolean;
   // Throttle mechanism for smooth rendering
   throttleTimer: ReturnType<typeof setTimeout> | null;
   pendingEmit: boolean;
   pendingEmitType: StreamEvent['type'] | null;
+}
+
+interface StreamAttemptCheckpoint {
+  accumulatedText: string;
+  accumulatedReasoning: string;
+  toolUsesArray: ToolUseInfo[];
+  toolResultsArray: ToolResultInfo[];
+  streamingBlocks: StreamingMessageBlock[];
+  blockSeq: number;
+  toolOutputAccumulated: string;
+  toolTimeoutInfo: { toolName: string; elapsedSeconds: number } | null;
 }
 
 export interface StartStreamParams {
@@ -156,6 +168,7 @@ function createPlaceholderStream(sessionId: string, listeners?: Set<StreamEventL
     blockSeq: 0,
     toolOutputAccumulated: '',
     toolTimeoutInfo: null,
+    assistantAttemptCheckpoint: null,
     isIdleTimeout: false,
     backendStopRequested: false,
     throttleTimer: null,
@@ -263,7 +276,36 @@ function resetStreamBuffers(stream: ActiveStream): void {
   stream.blockSeq = 0;
   stream.toolOutputAccumulated = '';
   stream.toolTimeoutInfo = null;
+  stream.assistantAttemptCheckpoint = null;
   stream.isIdleTimeout = false;
+}
+
+function captureAssistantAttemptCheckpoint(stream: ActiveStream): StreamAttemptCheckpoint {
+  return {
+    accumulatedText: stream.accumulatedText,
+    accumulatedReasoning: stream.accumulatedReasoning,
+    toolUsesArray: [...stream.toolUsesArray],
+    toolResultsArray: [...stream.toolResultsArray],
+    streamingBlocks: [...stream.streamingBlocks],
+    blockSeq: stream.blockSeq,
+    toolOutputAccumulated: stream.toolOutputAccumulated,
+    toolTimeoutInfo: stream.toolTimeoutInfo ? { ...stream.toolTimeoutInfo } : null,
+  };
+}
+
+function restoreAssistantAttemptCheckpoint(stream: ActiveStream): boolean {
+  const checkpoint = stream.assistantAttemptCheckpoint;
+  if (!checkpoint) return false;
+  stream.accumulatedText = checkpoint.accumulatedText;
+  stream.accumulatedReasoning = checkpoint.accumulatedReasoning;
+  stream.toolUsesArray = [...checkpoint.toolUsesArray];
+  stream.toolResultsArray = [...checkpoint.toolResultsArray];
+  stream.streamingBlocks = [...checkpoint.streamingBlocks];
+  stream.blockSeq = checkpoint.blockSeq;
+  stream.toolOutputAccumulated = checkpoint.toolOutputAccumulated;
+  stream.toolTimeoutInfo = checkpoint.toolTimeoutInfo ? { ...checkpoint.toolTimeoutInfo } : null;
+  stream.assistantAttemptCheckpoint = null;
+  return true;
 }
 
 function setTerminalTextContent(stream: ActiveStream, nextText: string): void {
@@ -543,6 +585,7 @@ export function startStream(params: StartStreamParams): void {
     blockSeq: 0,
     toolOutputAccumulated: '',
     toolTimeoutInfo: null,
+    assistantAttemptCheckpoint: null,
     isIdleTimeout: false,
     backendStopRequested: false,
     throttleTimer: null,
@@ -640,6 +683,18 @@ async function runStream(stream: ActiveStream, params: StartStreamParams): Promi
         const chunk = acc.startsWith(previous) ? acc.slice(previous.length) : acc;
         appendTextLikeBlock(stream, 'reasoning', chunk);
         emitThrottled(stream, 'snapshot-updated');
+      },
+      onAssistantAttemptStart: () => {
+        if (!isAcceptingEvents()) return;
+        markActive();
+        stream.assistantAttemptCheckpoint = captureAssistantAttemptCheckpoint(stream);
+      },
+      onAssistantAttemptReset: () => {
+        if (!isAcceptingEvents()) return;
+        markActive();
+        if (restoreAssistantAttemptCheckpoint(stream)) {
+          emitThrottled(stream, 'snapshot-updated', true);
+        }
       },
       onToolUse: (tool) => {
         if (!isAcceptingEvents()) return;

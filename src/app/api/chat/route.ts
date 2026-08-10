@@ -922,6 +922,13 @@ async function collectStreamResponse(
   let streamBuffer = '';
   // Dedup layer: skip duplicate tool_result events by tool_use_id
   const seenToolResultIds = new Set<string>();
+  let assistantAttemptCheckpoint: {
+    contentBlocks: MessageContentBlock[];
+    currentText: string;
+    currentReasoning: string;
+    activeBuffer: 'text' | 'reasoning' | null;
+    seenToolResultIds: Set<string>;
+  } | null = null;
   const shouldUseBridgePersistence = rolloutMode !== 'legacy';
   const shouldCreatePlaceholder = shouldUseBridgePersistence && typeof clientMessageId === 'string' && clientMessageId.length > 0;
   let assistantMessageId: string | null = null;
@@ -1006,6 +1013,34 @@ async function collectStreamResponse(
       },
     })
     : null;
+
+  const captureAssistantAttemptCheckpoint = () => {
+    assistantAttemptCheckpoint = {
+      contentBlocks: contentBlocks.map((block) => structuredClone(block)),
+      currentText,
+      currentReasoning,
+      activeBuffer,
+      seenToolResultIds: new Set(seenToolResultIds),
+    };
+  };
+
+  const restoreAssistantAttemptCheckpoint = () => {
+    if (!assistantAttemptCheckpoint) return;
+    contentBlocks.splice(
+      0,
+      contentBlocks.length,
+      ...assistantAttemptCheckpoint.contentBlocks.map((block) => structuredClone(block)),
+    );
+    currentText = assistantAttemptCheckpoint.currentText;
+    currentReasoning = assistantAttemptCheckpoint.currentReasoning;
+    activeBuffer = assistantAttemptCheckpoint.activeBuffer;
+    seenToolResultIds.clear();
+    for (const id of assistantAttemptCheckpoint.seenToolResultIds) {
+      seenToolResultIds.add(id);
+    }
+    assistantAttemptCheckpoint = null;
+    checkpointFlusher?.markDirty({ immediate: true });
+  };
 
   const persistAssistantTerminalState = async (terminalStatus: 'completed' | 'error') => {
     const finalBlocks = buildLiveContentBlocks();
@@ -1150,7 +1185,11 @@ async function collectStreamResponse(
             if (agentEvent) {
               agentOrchestrator.handleEvent(agentEvent);
             }
-            if (event.type === 'permission_request' || event.type === 'tool_output') {
+            if (event.type === 'assistant_attempt_start') {
+              captureAssistantAttemptCheckpoint();
+            } else if (event.type === 'assistant_attempt_reset') {
+              restoreAssistantAttemptCheckpoint();
+            } else if (event.type === 'permission_request' || event.type === 'tool_output') {
               // Skip permission_request and tool_output events - not saved as message content
             } else if (event.type === 'text') {
               if (activeBuffer === 'reasoning') {

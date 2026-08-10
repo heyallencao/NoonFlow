@@ -81,6 +81,23 @@ process.stdin.on('data', (chunk) => {
         send({ type: 'agent_settled' });
         continue;
       }
+      if (scenario === 'partial-output-retry') {
+        send({ type: 'message_start', message: { role: 'assistant' } });
+        send({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Stale partial answer' } });
+        send({ type: 'message_end', message: { role: 'assistant', stopReason: 'error', errorMessage: 'Anthropic stream ended before message_stop', content: [{ type: 'text', text: 'Stale partial answer' }], usage: { input: 1, output: 2 } } });
+        send({ type: 'agent_end', messages: [], willRetry: true });
+        send({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 0, errorMessage: 'Anthropic stream ended before message_stop' });
+        setTimeout(() => {
+          send({ type: 'agent_start' });
+          send({ type: 'message_start', message: { role: 'assistant' } });
+          send({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Recovered answer' } });
+          send({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Recovered answer' }], usage: { input: 2, output: 2 } } });
+          send({ type: 'auto_retry_end', success: true, attempt: 1 });
+          send({ type: 'agent_end', messages: [], willRetry: false });
+          send({ type: 'agent_settled' });
+        }, 0);
+        continue;
+      }
       if (scenario === 'compaction-success') {
         send({ type: 'compaction_start', reason: 'threshold' });
         send({ type: 'compaction_end', reason: 'threshold', result: { summary: 'summary', firstKeptEntryId: 'entry-1', tokensBefore: 900, estimatedTokensAfter: 240 }, aborted: false, willRetry: false });
@@ -181,11 +198,7 @@ describe('streamPi', () => {
       .map((chunk) => JSON.parse(chunk.slice('data: '.length)) as { type: string; data: string })
       .filter((event) => event.type === 'activity.updated')
       .map((event) => JSON.parse(event.data) as import('../../types').ChildActivity);
-    assert.deepEqual(activityEvents.map((activity) => activity.status), ['running', 'completed']);
-    assert.ok(activityEvents.every((activity) => activity.runtime === 'pi'));
-    assert.ok(activityEvents.every((activity) => activity.kind === 'agent'));
-    assert.ok(activityEvents.every((activity) => activity.parentId === undefined));
-    assert.equal(activityEvents.some((activity) => activity.id === 'tool-1'), false);
+    assert.deepEqual(activityEvents, []);
 
     const capture = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as { argv: string[]; commands: Array<Record<string, unknown>> };
     assert.deepEqual(capture.argv.slice(0, 2), ['--mode', 'rpc']);
@@ -234,12 +247,53 @@ describe('streamPi', () => {
       .map((chunk) => JSON.parse(chunk.slice('data: '.length)) as { type: string; data: string })
       .filter((event) => event.type === 'activity.updated')
       .map((event) => JSON.parse(event.data) as import('../../types').ChildActivity);
-    assert.equal(activities.at(-1)?.status, 'completed');
-    assert.ok(activities.slice(0, -1).every((activity) => activity.status === 'running' || activity.status === 'waiting'));
-    assert.ok(activities.some((activity) => activity.status === 'waiting' && /Retrying/.test(activity.summary || '')));
+    assert.deepEqual(activities, []);
   });
 
-  it('reports only the final Pi retry failure and settles the activity as failed', async () => {
+  it('rolls back a failed visible attempt and keeps the native retry result', async () => {
+    fakeScenario = 'partial-output-retry';
+    let payload = '';
+    try {
+      payload = await readStream(streamPi({
+        prompt: 'Do not duplicate partial output',
+        sessionId: 'pi-partial-output-retry',
+        workingDirectory: testDir,
+      }));
+    } finally {
+      fakeScenario = 'normal';
+    }
+
+    const events = payload
+      .split('\n\n')
+      .map((chunk) => chunk.trim())
+      .filter(Boolean)
+      .map((chunk) => JSON.parse(chunk.slice('data: '.length)) as { type: string; data: string });
+    assert.deepEqual(events
+      .filter((event) => event.type === 'assistant_attempt_start'
+        || event.type === 'assistant_attempt_reset'
+        || event.type === 'text')
+      .map((event) => [event.type, event.data]), [
+        ['assistant_attempt_start', ''],
+        ['text', 'Stale partial answer'],
+        ['assistant_attempt_reset', ''],
+        ['assistant_attempt_start', ''],
+        ['text', 'Recovered answer'],
+      ]);
+    assert.equal(events.some((event) => event.type === 'error'), false);
+    assert.ok(events.some((event) => (
+      event.type === 'result'
+      && JSON.parse(event.data).is_error === false
+    )));
+    assert.equal(events.some((event) => event.type === 'activity.updated'), false);
+    assert.equal(events.at(-1)?.type, 'done');
+
+    const capture = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as {
+      commands: Array<{ type: string }>;
+    };
+    assert.equal(capture.commands.filter((command) => command.type === 'abort_retry').length, 0);
+  });
+
+  it('reports only the final Pi retry failure without top-level activity', async () => {
     fakeScenario = 'retry-final-failure';
     let payload = '';
     try {
@@ -261,8 +315,7 @@ describe('streamPi', () => {
       .map((chunk) => JSON.parse(chunk.slice('data: '.length)) as { type: string; data: string })
       .filter((event) => event.type === 'activity.updated')
       .map((event) => JSON.parse(event.data) as import('../../types').ChildActivity);
-    assert.equal(activities.at(-1)?.status, 'failed');
-    assert.ok(activities.every((activity) => activity.status !== 'completed'));
+    assert.deepEqual(activities, []);
   });
 
   it('maps native compaction success and keeps estimated post tokens explicitly approximate', async () => {

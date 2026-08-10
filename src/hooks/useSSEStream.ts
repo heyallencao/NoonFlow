@@ -24,9 +24,22 @@ interface ToolResultInfo {
   is_error?: boolean;
 }
 
+export interface AssistantAttemptCheckpoint {
+  text: string;
+  reasoning: string;
+}
+
+interface StreamAccumulators {
+  text: string;
+  reasoning: string;
+  assistantAttemptCheckpoint: AssistantAttemptCheckpoint | null;
+}
+
 export interface SSECallbacks {
   onText: (accumulated: string) => void;
   onReasoning: (accumulated: string) => void;
+  onAssistantAttemptStart?: () => void;
+  onAssistantAttemptReset?: (checkpoint: AssistantAttemptCheckpoint) => void;
   onToolUse: (tool: ToolUseInfo) => void;
   onToolResult: (result: ToolResultInfo) => void;
   onToolOutput: (data: string) => void;
@@ -99,9 +112,9 @@ function deriveSessionId(event: SSEEvent, fallbackSessionId?: string): string | 
 
 function dispatchAgentEvent(
   event: AgentEvent,
-  accumulators: { text: string; reasoning: string },
+  accumulators: StreamAccumulators,
   callbacks: SSECallbacks,
-): { text: string; reasoning: string } {
+): StreamAccumulators {
   switch (event.type) {
     case 'message.delta': {
       const next = accumulators.text + event.content;
@@ -113,6 +126,28 @@ function dispatchAgentEvent(
       const next = accumulators.reasoning + event.content;
       callbacks.onReasoning(next);
       return { ...accumulators, reasoning: next };
+    }
+
+    case 'message.attempt.started': {
+      callbacks.onAssistantAttemptStart?.();
+      return {
+        ...accumulators,
+        assistantAttemptCheckpoint: {
+          text: accumulators.text,
+          reasoning: accumulators.reasoning,
+        },
+      };
+    }
+
+    case 'message.attempt.reset': {
+      const checkpoint = accumulators.assistantAttemptCheckpoint;
+      if (!checkpoint) return accumulators;
+      callbacks.onAssistantAttemptReset?.(checkpoint);
+      return {
+        text: checkpoint.text,
+        reasoning: checkpoint.reasoning,
+        assistantAttemptCheckpoint: null,
+      };
     }
 
     case 'tool.start': {
@@ -232,9 +267,9 @@ function dispatchAgentEvent(
 
 function handleSSEEvent(
   event: SSEEvent,
-  accumulators: { text: string; reasoning: string },
+  accumulators: StreamAccumulators,
   callbacks: SSECallbacks,
-): { text: string; reasoning: string } {
+): StreamAccumulators {
   switch (event.type) {
     case 'text': {
       const next = accumulators.text + event.data;
@@ -246,6 +281,28 @@ function handleSSEEvent(
       const next = accumulators.reasoning + event.data;
       callbacks.onReasoning(next);
       return { ...accumulators, reasoning: next };
+    }
+
+    case 'assistant_attempt_start': {
+      callbacks.onAssistantAttemptStart?.();
+      return {
+        ...accumulators,
+        assistantAttemptCheckpoint: {
+          text: accumulators.text,
+          reasoning: accumulators.reasoning,
+        },
+      };
+    }
+
+    case 'assistant_attempt_reset': {
+      const checkpoint = accumulators.assistantAttemptCheckpoint;
+      if (!checkpoint) return accumulators;
+      callbacks.onAssistantAttemptReset?.(checkpoint);
+      return {
+        text: checkpoint.text,
+        reasoning: checkpoint.reasoning,
+        assistantAttemptCheckpoint: null,
+      };
     }
 
     case 'tool_use': {
@@ -395,7 +452,11 @@ export async function consumeSSEStream(
 ): Promise<{ accumulated: string; tokenUsage: TokenUsage | null }> {
   const decoder = new TextDecoder();
   let buffer = '';
-  let accumulators = { text: '', reasoning: '' };
+  let accumulators: StreamAccumulators = {
+    text: '',
+    reasoning: '',
+    assistantAttemptCheckpoint: null,
+  };
   let tokenUsage: TokenUsage | null = null;
 
   const wrappedCallbacks: SSECallbacks = {
@@ -470,6 +531,8 @@ export function useSSEStream() {
       const proxied: SSECallbacks = {
         onText: (a) => callbacksRef.current?.onText(a),
         onReasoning: (a) => callbacksRef.current?.onReasoning(a),
+        onAssistantAttemptStart: () => callbacksRef.current?.onAssistantAttemptStart?.(),
+        onAssistantAttemptReset: (checkpoint) => callbacksRef.current?.onAssistantAttemptReset?.(checkpoint),
         onToolUse: (t) => callbacksRef.current?.onToolUse(t),
         onToolResult: (r) => callbacksRef.current?.onToolResult(r),
         onToolOutput: (d) => callbacksRef.current?.onToolOutput(d),

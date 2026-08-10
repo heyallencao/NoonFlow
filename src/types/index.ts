@@ -516,6 +516,8 @@ export interface SkillResponse {
 export type SSEEventType =
   | 'text'               // text content delta
   | 'reasoning'          // thinking / reasoning delta
+  | 'assistant_attempt_start' // checkpoint before one assistant model attempt
+  | 'assistant_attempt_reset' // restore the checkpoint before a native retry
   | 'tool_use'           // tool invocation info
   | 'tool_result'        // tool execution result
   | 'tool_output'        // streaming tool output (stderr from SDK process)

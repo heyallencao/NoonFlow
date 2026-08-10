@@ -30,6 +30,10 @@ export interface MessageReasoningEvent extends BaseAgentEvent<'message.reasoning
   content: string;
 }
 
+export type MessageAttemptStartedEvent = BaseAgentEvent<'message.attempt.started'>;
+
+export type MessageAttemptResetEvent = BaseAgentEvent<'message.attempt.reset'>;
+
 export interface ToolStartEvent extends BaseAgentEvent<'tool.start'> {
   toolName: string;
   toolUseId: string;
@@ -124,6 +128,8 @@ export type AgentEvent =
   | SessionStartedEvent
   | MessageDeltaEvent
   | MessageReasoningEvent
+  | MessageAttemptStartedEvent
+  | MessageAttemptResetEvent
   | ToolStartEvent
   | ToolResultEvent
   | ToolOutputEvent

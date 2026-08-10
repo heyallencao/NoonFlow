@@ -87,7 +87,10 @@ export function createCheckpointFlusher(options: CheckpointFlusherOptions): Chec
       return drainPromise;
     }
 
-    drainPromise = (async () => {
+    // Defer the drain body until after drainPromise has been assigned. An
+    // immediate empty snapshot can otherwise complete synchronously and set
+    // drainPromise to null before this assignment stores the resolved promise.
+    drainPromise = Promise.resolve().then(async () => {
       try {
         while (dirty || pendingFinalStatus) {
           clearTimer();
@@ -118,7 +121,7 @@ export function createCheckpointFlusher(options: CheckpointFlusherOptions): Chec
           void scheduleDrain();
         }
       }
-    })();
+    });
 
     return drainPromise;
   };

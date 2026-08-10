@@ -108,6 +108,61 @@ describe('stream-session-manager terminal snapshots', () => {
     assert.equal(getSnapshot(sessionId), null);
   });
 
+  it('rolls back only the failed assistant attempt while preserving completed tools', async () => {
+    const {
+      startStream,
+      subscribe,
+      clearSnapshot,
+    } = await importFreshStreamSessionManager();
+
+    global.fetch = async () => new Response(createSSEBody([
+      { type: 'tool_use', data: JSON.stringify({ id: 'tool-before-retry', name: 'Read', input: { path: 'README.md' } }) },
+      { type: 'tool_result', data: JSON.stringify({ tool_use_id: 'tool-before-retry', content: 'existing result' }) },
+      { type: 'assistant_attempt_start', data: '' },
+      { type: 'reasoning', data: 'stale reasoning' },
+      { type: 'text', data: 'stale partial answer' },
+      { type: 'assistant_attempt_reset', data: '' },
+      { type: 'assistant_attempt_start', data: '' },
+      { type: 'text', data: 'recovered answer' },
+      { type: 'result', data: JSON.stringify({ usage: { input_tokens: 2, output_tokens: 3 } }) },
+      { type: 'done', data: '' },
+    ]), {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
+
+    const sessionId = `stream-manager-retry-${Date.now()}`;
+    const completedSnapshotPromise = new Promise<Awaited<ReturnType<typeof import('../../lib/stream-session-manager').getSnapshot>>>((resolve) => {
+      const unsubscribe = subscribe(sessionId, (event: StreamEvent) => {
+        if (event.type !== 'completed') return;
+        unsubscribe();
+        resolve(event.snapshot);
+      });
+    });
+
+    startStream({
+      sessionId,
+      clientMessageId: 'msg-retry-1',
+      content: 'retry once',
+      mode: 'code',
+      model: 'test-model',
+      providerId: '',
+      assistantRuntime: 'pi',
+    });
+
+    const snapshot = await completedSnapshotPromise;
+    assert.ok(snapshot);
+    assert.equal(snapshot.phase, 'completed');
+    assert.equal(snapshot.streamingContent, 'recovered answer');
+    assert.equal(snapshot.streamingReasoning, '');
+    assert.deepEqual(snapshot.toolUses.map((tool) => tool.id), ['tool-before-retry']);
+    assert.deepEqual(snapshot.toolResults.map((result) => result.tool_use_id), ['tool-before-retry']);
+    assert.equal(JSON.stringify(snapshot.streamingBlocks).includes('stale'), false);
+    assert.equal(buildSnapshotAssistantContent(snapshot).includes('recovered answer'), true);
+
+    await settleStreamAndClear(sessionId, clearSnapshot);
+  });
+
   it('preserves partial content when manually stopped', async () => {
     const {
       startStream,

@@ -1,9 +1,13 @@
 import { expect, test, type Page } from '@playwright/test';
 import { goToConversation, sendMessage, stopButton } from '../helpers';
 
-type StreamScenario = 'terminal' | 'stop';
+type StreamScenario = 'terminal' | 'stop' | 'pi-ordinary' | 'pi-retry';
 
-async function mockChatShell(page: Page, sessionId: string) {
+async function mockChatShell(
+  page: Page,
+  sessionId: string,
+  assistantRuntime: 'claude_code' | 'pi' = 'claude_code',
+) {
   const session = {
     id: sessionId,
     title: 'Child Activity',
@@ -23,7 +27,7 @@ async function mockChatShell(page: Page, sessionId: string) {
     runtime_status: 'idle',
     runtime_updated_at: '2026-08-09 10:00:00',
     runtime_error: '',
-    assistant_runtime: 'claude_code',
+    assistant_runtime: assistantRuntime,
     assistant_runtime_version: '',
   };
 
@@ -52,7 +56,7 @@ async function mockChatShell(page: Page, sessionId: string) {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ settings: { default_assistant_runtime: 'claude_code' } }),
+      body: JSON.stringify({ settings: { default_assistant_runtime: assistantRuntime } }),
     });
   });
   await page.route('**/api/assistant-runtimes', async (route) => {
@@ -60,10 +64,16 @@ async function mockChatShell(page: Page, sessionId: string) {
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        default_assistant_runtime: 'claude_code',
+        default_assistant_runtime: assistantRuntime,
         runtimes: [{
-          id: 'claude_code', label: 'Claude Code', enabled: true, available: true,
-          installed: true, configured: true, supports_plan_mode: true, supports_permissions: true,
+          id: assistantRuntime,
+          label: assistantRuntime === 'pi' ? 'Pi' : 'Claude Code',
+          enabled: true,
+          available: true,
+          installed: true,
+          configured: true,
+          supports_plan_mode: true,
+          supports_permissions: assistantRuntime === 'claude_code',
         }],
       }),
     });
@@ -135,6 +145,37 @@ async function installMockSSE(page: Page, sessionId: string, scenario: StreamSce
             type: 'status',
             data: JSON.stringify({ session_id: `${activeSessionId}-native`, model: 'sonnet' }),
           }, 20);
+
+          if (activeScenario === 'pi-ordinary') {
+            emit({ type: 'text', data: '你好！有什么可以帮你的吗？' }, 40);
+            emit({ type: 'result', data: JSON.stringify({ usage: { input_tokens: 1, output_tokens: 8 } }) }, 60);
+            emit({ type: 'done', data: '' }, 80);
+            timers.push(window.setTimeout(() => {
+              if (!closed) {
+                closed = true;
+                controller.close();
+              }
+            }, 100));
+            return;
+          }
+
+          if (activeScenario === 'pi-retry') {
+            emit({ type: 'assistant_attempt_start', data: '' }, 40);
+            emit({ type: 'text', data: '这段失败内容不应保留' }, 60);
+            emit({ type: 'assistant_attempt_reset', data: '' }, 80);
+            emit({ type: 'assistant_attempt_start', data: '' }, 100);
+            emit({ type: 'text', data: '重试后的唯一回答' }, 120);
+            emit({ type: 'result', data: JSON.stringify({ usage: { input_tokens: 2, output_tokens: 8 } }) }, 140);
+            emit({ type: 'done', data: '' }, 160);
+            timers.push(window.setTimeout(() => {
+              if (!closed) {
+                closed = true;
+                controller.close();
+              }
+            }, 180));
+            return;
+          }
+
           emit({ type: 'text', data: 'Working across runtimes.' }, 40);
 
           if (activeScenario === 'terminal') {
@@ -224,5 +265,30 @@ test.describe('message child activity panel', () => {
     await page.waitForTimeout(1_100);
     await expect(panel).not.toContainText('FORBIDDEN LATE UPDATE');
     expect(stopCalls).toBe(1);
+  });
+
+  test('ordinary Pi chat shows one answer without a top-level agent activity card', async ({ page }) => {
+    const sessionId = 'pi-ordinary-chat';
+    await mockChatShell(page, sessionId, 'pi');
+    await installMockSSE(page, sessionId, 'pi-ordinary');
+    await goToConversation(page, sessionId);
+    await sendMessage(page, '你好');
+
+    await expect(page.getByText('你好！有什么可以帮你的吗？', { exact: true })).toHaveCount(1);
+    await expect(page.getByTestId('child-activity-list')).toHaveCount(0);
+    await expect(stopButton(page)).toBeHidden();
+  });
+
+  test('Pi retry replaces the failed partial attempt instead of appending another answer', async ({ page }) => {
+    const sessionId = 'pi-retry-chat';
+    await mockChatShell(page, sessionId, 'pi');
+    await installMockSSE(page, sessionId, 'pi-retry');
+    await goToConversation(page, sessionId);
+    await sendMessage(page, '测试重试');
+
+    await expect(page.getByText('重试后的唯一回答', { exact: true })).toHaveCount(1);
+    await expect(page.getByText('这段失败内容不应保留', { exact: true })).toHaveCount(0);
+    await expect(page.getByTestId('child-activity-list')).toHaveCount(0);
+    await expect(stopButton(page)).toBeHidden();
   });
 });
